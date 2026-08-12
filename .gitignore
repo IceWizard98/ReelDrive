@@ -1,0 +1,26 @@
+node_modules/
+dist/
+src-tauri/target/
+docs/superpowers/
+media/
+.DS_Store
+*.log
+.env
+.claude
+diary.md
+.ffmpeg-cache/
+
+# Written by tauri_build::build() on every build, on every machine.
+src-tauri/gen/schemas/
+
+# What a build drops in the destination folder — the product, not the source.
+/ReelDrive.app/
+/ReelDrive.AppImage
+/ReelDrive.exe
+/ffmpeg
+/ffprobe
+/ffmpeg.exe
+/ffprobe.exe
+
+# Fixtures of the preview harness — see the comment in src/preview.js.
+public/

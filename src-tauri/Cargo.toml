@@ -1,0 +1,32 @@
+[package]
+name = "reeldrive"
+version = "0.1.0"
+edition = "2021"
+description = "Portable media library player"
+rust-version = "1.85"
+
+[lib]
+name = "reeldrive_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = ["protocol-asset"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tiny_http = "0.12.0"
+getrandom = "0.4.3"
+
+[dev-dependencies]
+tempfile = "3"
+
+[profile.release]
+codegen-units = 1
+lto = true
+opt-level = "s"
+# Unwinding is kept on purpose: Tauri turns a panic inside a command into an
+# error for the webview, while `panic = "abort"` would take the whole player
+# down with it. The few hundred kilobytes it costs are worth that.
+strip = true
