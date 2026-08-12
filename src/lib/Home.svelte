@@ -25,6 +25,7 @@
   ];
 
   let search = $state(null);
+  let bar = $state(null);
   let grids = $state(null);
 
   let matches = $derived(
@@ -88,10 +89,14 @@
 
   /// The first tile actually on screen. Entering the grid from the top of the
   /// library while the user is looking at the middle of it is a jump, not a
-  /// navigation. The offset clears the sticky header, so the tile it picks is
-  /// one that is really visible.
+  /// navigation. The clearance is the sticky panel's own bottom edge, measured
+  /// rather than written down: it was 96, which was the height of the bar on
+  /// one line, and below 900px the bar is on two — the tile that got the focus
+  /// there was the one behind the glass, with `scrollIntoView` declining to
+  /// move because it is technically in the viewport.
   function firstVisible(list) {
-    return list.find((tile) => tile.getBoundingClientRect().bottom > 96) ?? list[0];
+    const clearance = bar?.getBoundingClientRect().bottom ?? 0;
+    return list.find((tile) => tile.getBoundingClientRect().bottom > clearance) ?? list[0];
   }
 
   function focusTile(tile) {
@@ -167,7 +172,7 @@
 
 <div class="topcover" aria-hidden="true"></div>
 
-<header>
+<header bind:this={bar}>
   <!-- The one place the application says its own name. The header carried the
        volume's name and the stick's counts, which are the *content's*
        identity, and nothing at all said what was reading them — on a wide
@@ -180,7 +185,7 @@
 
     <p class="volume">
       <span class="eyebrow">Volume</span>
-      <span class="name">{volume}</span>
+      <span class="name" title={volume}>{volume}</span>
       <span class="counts">
         {library.contents.length} titles · {library.contents.filter((c) => c.kind === "series").length}
         series · {library.contents.filter((c) => c.kind === "movie").length} movies
@@ -346,8 +351,6 @@
     z-index: 3;
   }
 
-  /* Dimmer than the volume name beside it: this is the thing that never
-     changes, and the name of what you plugged in is the thing that does. */
   /* One column, so the mark and the volume travel together and the grid has a
      single thing to weigh against the search field. */
   .identity {
@@ -357,6 +360,8 @@
     min-width: 0;
   }
 
+  /* Dimmer than the volume name beside it: this is the thing that never
+     changes, and the name of what you plugged in is the thing that does. */
   .brand {
     display: flex;
     color: var(--text-2);
@@ -371,10 +376,20 @@
     gap: var(--space-3xs);
   }
 
+  /* One line, clipped. The name comes from a folder the user named, and a long
+     one has nowhere to go: `min-width: 0` on the block lets its track shrink,
+     but the text inside kept its own width and painted straight across the
+     filter beside it — measured at 1000px, a thirty-character name ran 230px
+     into the segmented control and under 900px into the search field. The
+     ellipsis is the only mark that says the name goes on; `title` is where it
+     goes on. */
   .name {
     font-size: var(--t-section);
     font-weight: 700;
     letter-spacing: -0.01em;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
   }
 
   .counts {
@@ -595,6 +610,12 @@
     cursor: pointer;
   }
 
+  .warnings ul {
+    margin: var(--space-sm) 0 0;
+    padding-left: 1.1rem;
+    line-height: 1.7;
+  }
+
   /* Below this the three columns stop fitting side by side, and a middle one
      held in the middle only squeezes the two beside it. Stacked, the control
      keeps its own row and the search field gets the width back. */
@@ -603,30 +624,33 @@
       grid-template-columns: 1fr auto;
     }
 
-    /* Two rows, not three. The identity and the search keep the top one — they
-       are what the bar is for — and the control drops beneath them across the
-       whole width. Stacking all three costs sixty pixels of height on a window
-       that is already short enough to have a minimum. */
+    /* Two rows, not three: stacking all three costs sixty pixels of height on a
+       window already short enough to have a minimum.
+       Which two share the top is not a free choice. Nothing in the identity
+       block takes focus, so the first thing Tab reaches in this panel is the
+       first control in the markup — the filter — and the markup cannot be
+       reordered without breaking the wide layout, where the filter is the
+       middle column by design. Dropping the search instead of the filter is
+       what keeps the order the eye reads and the order Tab walks the same one:
+       identity and filter above, search below. */
     .identity {
       grid-area: 1 / 1;
     }
 
-    .find {
+    .kinds {
       grid-area: 1 / 2;
     }
 
-    /* Its own width, not the column's: a grid item fills its track, and a
-       segmented control stretched across the whole bar stops looking like
-       three choices and starts looking like a progress bar. */
-    .kinds {
+    /* The whole row, and the field with it. On a narrow window the search is
+       the control that wants the width, and a 280px field left over at the end
+       of an empty row reads as something that failed to line up. */
+    .find {
       grid-area: 2 / 1 / 3 / -1;
-      justify-self: start;
+      justify-self: stretch;
     }
-  }
 
-  .warnings ul {
-    margin: var(--space-sm) 0 0;
-    padding-left: 1.1rem;
-    line-height: 1.7;
+    .find input {
+      width: 100%;
+    }
   }
 </style>

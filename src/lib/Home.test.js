@@ -55,6 +55,18 @@ describe("the grid", () => {
     expect(screen.getByText("STICK")).toBeInTheDocument();
   });
 
+  it("keeps a clipped volume name readable somewhere", () => {
+    // The name is one line that ends in an ellipsis: a folder called
+    // "Backup_Filmoteca_Completa_2026" used to paint straight across the type
+    // filter beside it. Clipping is the fix, and clipped text has to say
+    // somewhere what it clipped.
+    home({ media_root: "/Volumes/Backup_Filmoteca_Completa_2026/media" });
+    expect(screen.getByText("Backup_Filmoteca_Completa_2026")).toHaveAttribute(
+      "title",
+      "Backup_Filmoteca_Completa_2026",
+    );
+  });
+
   it("still names something when the media folder sits at a root", () => {
     // "/media" has no folder above it. A blank heading reads as a bug.
     home({ media_root: "/media" });
