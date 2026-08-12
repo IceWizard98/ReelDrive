@@ -81,7 +81,7 @@ const DETAILS = {
         { number: 0, title: "Specials", episodes: [episode(1, "Behind the scenes")] },
         {
           number: 1,
-          title: "Season 1",
+          title: "Season 1 - Il principio",
           episodes: [
             episode(1, "My First Day", 1),
             episode(2, "My Mentor", 1),
@@ -93,7 +93,7 @@ const DETAILS = {
             episode(8, "My Fifteen Minutes"),
           ],
         },
-        { number: 2, title: "S02", episodes: [episode(1, "My Overkill"), episode(2, "My Nightingale")] },
+        { number: 2, title: "", episodes: [episode(1, "My Overkill"), episode(2, "My Nightingale")] },
       ],
     },
   },
@@ -112,7 +112,7 @@ const DETAILS = {
       seasons: [
         {
           number: 1,
-          title: "Season 1",
+          title: "",
           episodes: [episode(1, "System"), episode(2, "Hands"), episode(3, "Brigade")],
         },
       ],
