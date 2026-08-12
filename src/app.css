@@ -12,6 +12,13 @@
      cursor did not visibly change, and on this app clicking the wrong one
      costs an ffmpeg launch. */
   --ink-hi: #2b2b36;
+  /* The fill a *chosen* segment wears, which is a different job from the one
+     above: --ink-hi says "the pointer is here", this says "this is the setting".
+     It has to clear the 3:1 of WCAG 1.4.11 against the surface it sits on,
+     because in a segmented control the fill is the whole state indicator — and
+     --ink-hi is 1.37:1 against the header glass, a smudge you have to hunt for.
+     3.33:1 on --ink, 3.18:1 on the glass panel, and --on reads 5.5:1 on it. */
+  --ink-sel: #62626e;
 
   /* Three tiers of line, because a decorative separator and the edge of a
      control do not have the same job. Ratios against --ink #08080b.

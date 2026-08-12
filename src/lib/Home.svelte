@@ -171,7 +171,10 @@
   <!-- The one place the application says its own name. The header carried the
        volume's name and the stick's counts, which are the *content's*
        identity, and nothing at all said what was reading them — on a wide
-       window the whole middle of the bar was empty besides. -->
+       window the whole middle of the bar was empty besides.
+       Forty-six, because below about forty the sprocket holes stop reading as
+       holes: the filmstrip turns to grain and the mark stops being a picture of
+       anything. -->
   <span class="brand"><Logo size={46} /></span>
 
   <p class="volume">
@@ -302,7 +305,10 @@
        over three lines. `margin-left: auto` on the input keeps it right where
        it is as long as they share a row. */
     flex-wrap: wrap;
-    gap: var(--space-lg) var(--space-xl);
+    /* Tighter across than down. The chips belong to the volume line they
+       narrow, and a gap the width of the search field's own inset read as
+       three unrelated things sharing a bar. */
+    gap: var(--space-lg) var(--space-md);
     padding: var(--space-md) var(--space-md) var(--space-md) 1.1rem;
     margin: var(--space-md) var(--gutter) var(--space-xl);
     position: sticky;
@@ -340,19 +346,16 @@
     z-index: 3;
   }
 
-  /* The signature line: a rented catalogue cannot tell you what is on the
-     shelf, this one can. */
   /* Dimmer than the volume name beside it: this is the thing that never
      changes, and the name of what you plugged in is the thing that does. */
   .brand {
     display: flex;
-    /* Big enough for the sprocket holes to read as holes. Below about forty
-       pixels the filmstrip turns to grain and the mark stops being a picture of
-       anything. */
     color: var(--text-2);
     margin-right: var(--space-3xs);
   }
 
+  /* The signature line: a rented catalogue cannot tell you what is on the
+     shelf, this one can. */
   .volume {
     margin: 0;
     display: grid;
@@ -371,37 +374,67 @@
     font-variant-numeric: tabular-nums;
   }
 
-  /* A pill, like every other control in the app now. The player's row is round
-     buttons; a 6px rectangle beside them read as a form field from another
-     application. */
-  /* The same pill the season tabs are, and lit the same way: a fill as well as
-     brighter text, because one shade of grey against another is no signal to
-     anyone who cannot separate them. */
+  /* One container, not three loose pills. These three are alternatives — you
+     cannot be on two of them — and a track around them is the only thing in the
+     grammar that says so; three words with air between them read as three
+     labels somebody put in a bar. It also gives the group a left edge, which is
+     what was really missing: unbounded text starts wherever its first glyph
+     does, so the row looked like it floated in from the right no matter how
+     much the header gap was tightened.
+     Opaque fill and a real border, the same two decisions the search field
+     beside it makes and for the same reason: posters scroll under this panel,
+     and a translucent control takes its own boundary under 3:1 the moment a
+     bright cover passes. Two controls in one bar now share one grammar. */
   .kinds {
     display: flex;
-    gap: var(--space-3xs);
+    gap: 0;
+    padding: 2px;
+    border-radius: var(--radius-pill);
+    background: var(--ink);
+    border: 1px solid var(--line-strong);
   }
 
   .kind {
-    padding: var(--space-xs) var(--space-md);
+    /* Tighter across than the loose pills were: inside a track the padding is
+       the gap, and 12px each side pushed "All" a third of the way into its own
+       segment. Down the way it is 0.45rem and not a step, for the same reason
+       the season tabs write that number out: it is what puts the track at the
+       search field's own 35px, and two controls of different heights sitting on
+       one row is the thing you see before you read either of them. */
+    padding: 0.45rem 0.7rem;
     border-radius: var(--radius-pill);
     font-size: var(--t-meta);
     font-weight: 600;
     color: var(--text-3);
+    /* Named properties, and 120ms: this is clicked a few times a session, not a
+       hundred times a day, so it can afford a crossfade — but a segmented
+       control is also the one place a user clicks twice in a row to compare, so
+       nothing here may outlast a second click. A transition retargets from
+       wherever it is; keyframes would restart from zero. */
     transition:
       background-color var(--dur-fast) var(--ease-out),
       color var(--dur-fast) var(--ease-out);
   }
 
+  /* Colour only. A fill on hover inside a track is the same signal as a fill on
+     the chosen segment, and the neighbour under the pointer ends up looking
+     half-selected. */
   .kind:hover {
-    color: var(--text-2);
+    color: var(--text);
   }
 
+  /* "This is the setting." --ink-hi was 1.37:1 against the glass behind it —
+     under the 3:1 WCAG 1.4.11 asks of the one mark identifying a state, and in
+     practice a smudge you had to look for to know what the library was showing.
+     --ink-sel is 3.3:1 on this track, and --on is 5.5:1 on it. */
   .kind.active {
-    background: var(--ink-hi);
+    background: var(--ink-sel);
     color: var(--on);
   }
 
+  /* A pill, like every other control in the app now. The player's row is round
+     buttons; a 6px rectangle beside them read as a form field from another
+     application. */
   .find {
     position: relative;
     margin-left: auto;
