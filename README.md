@@ -17,7 +17,8 @@ filesystem and works out on its own what is a film and what is a series.
 [![Tauri](https://img.shields.io/badge/Tauri-2-24C8DB?logo=tauri&logoColor=white)](https://tauri.app)
 [![Svelte](https://img.shields.io/badge/Svelte-5-FF3E00?logo=svelte&logoColor=white)](https://svelte.dev)
 [![Rust](https://img.shields.io/badge/Rust-1.85-000000?logo=rust&logoColor=white)](https://www.rust-lang.org)
-[![Tests](https://img.shields.io/badge/tests-231%20Rust%20%C2%B7%2069%20frontend-2ea043)](#development)
+[![Tests](https://img.shields.io/badge/tests-232%20Rust%20%C2%B7%2084%20frontend-2ea043)](#development)
+[![License](https://img.shields.io/badge/license-MIT-1f2430)](LICENSE)
 
 <img src=".github/screenshots/library.png" alt="The library screen: a grid of posters grouped into series and movies" width="900">
 
@@ -298,7 +299,7 @@ by position — `Home` and `End` reach the ends.
 npm install
 REELDRIVE_MEDIA=/path/to/media npm run tauri dev
 
-just test      # or: make test    — 231 Rust, 69 frontend
+just test      # or: make test    — 232 Rust, 84 frontend
 just check     # or: make check   — tests, clippy, formatting, frontend build
 ```
 
@@ -424,12 +425,20 @@ one:
 
 ## License
 
-Not settled yet — no licence file has been chosen, so all rights are reserved by
-default and the code is not yet redistributable.
+[MIT](LICENSE) — do what you like with it, keep the notice.
 
-Note that release archives bundle **GPL builds of ffmpeg** (they carry
-`libx264`, which the conversion path needs). Whatever licence this project takes
-has to account for that before any binary is distributed.
+**The bundled ffmpeg is not MIT, and cannot be.** Release archives carry static
+builds with `libx264`, which makes them **GPL**. That does not reach this
+project's own code: ReelDrive runs ffmpeg as a separate process and speaks to it
+over the command line, which is arm's length, and the two travelling in one
+archive is mere aggregation. But whoever *distributes* those archives carries
+the GPL's obligations for that part of them — ship the licence text alongside,
+and be able to point at the corresponding source for the exact builds shipped.
+`scripts/fetch-ffmpeg.sh` records which ones those are.
+
+None of this touches you if you build it yourself, or if you swap in an
+LGPL-only ffmpeg — that means giving up `libx264`, and with it the conversion
+path that makes an unplayable codec play at all.
 
 ## Acknowledgements
 
