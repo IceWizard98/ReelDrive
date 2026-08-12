@@ -32,7 +32,7 @@ beforeEach(() => {
 describe("the credit", () => {
   it("names the author and shows the address", async () => {
     render(App);
-    await screen.findByRole("button", { name: "IceWizard" });
+    await screen.findByRole("button", { name: "Luis Enriquez" });
     // Written out as well as linked: this app is built for machines with no
     // network, where the browser may not open at all, and an address you can
     // read is one you can type somewhere else.
@@ -43,7 +43,7 @@ describe("the credit", () => {
     // A plain link would take the webview itself to the site, and the app has
     // no way back — there is no address bar and no history to speak of.
     render(App);
-    await fireEvent.click(await screen.findByRole("button", { name: "IceWizard" }));
+    await fireEvent.click(await screen.findByRole("button", { name: "Luis Enriquez" }));
     await waitFor(() => expect(api.openAuthorSite).toHaveBeenCalledTimes(1));
     // No argument: the address lives in the backend, so nothing on this side
     // can ask it to open something else.
@@ -55,7 +55,7 @@ describe("the credit", () => {
     // no default browser, a stick plugged into something minimal.
     api.openAuthorSite.mockRejectedValue("no handler");
     render(App);
-    await fireEvent.click(await screen.findByRole("button", { name: "IceWizard" }));
+    await fireEvent.click(await screen.findByRole("button", { name: "Luis Enriquez" }));
     await waitFor(() => expect(api.openAuthorSite).toHaveBeenCalled());
     expect(screen.getByText("luise.ac")).toBeInTheDocument();
   });
@@ -66,6 +66,6 @@ describe("the credit", () => {
     api.getLibrary.mockResolvedValue({ ...LIBRARY, media_root_exists: false, contents: [] });
     render(App);
     await screen.findByText(/Content folder missing/);
-    expect(screen.getByRole("button", { name: "IceWizard" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Luis Enriquez" })).toBeInTheDocument();
   });
 });

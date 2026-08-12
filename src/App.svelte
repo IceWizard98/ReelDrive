@@ -175,7 +175,7 @@
        over a picture. -->
   <footer>
     Made by
-    <button onclick={() => openAuthorSite().catch(() => {})}>IceWizard</button>
+    <button onclick={() => openAuthorSite().catch(() => {})}>Luis Enriquez</button>
     <span aria-hidden="true">·</span>
     <span class="site">luise.ac</span>
   </footer>

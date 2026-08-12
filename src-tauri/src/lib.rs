@@ -386,7 +386,7 @@ fn stop_playback(state: State<'_, AppState>) {
 
 /// Who made this, and where to find them. The window shows the name; this is
 /// the only thing that knows the address.
-pub const AUTHOR: &str = "IceWizard";
+pub const AUTHOR: &str = "Luis Enriquez";
 pub const AUTHOR_URL: &str = "https://luise.ac";
 
 /// Open the author's site in the user's own browser.
