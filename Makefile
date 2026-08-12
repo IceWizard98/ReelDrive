@@ -97,6 +97,12 @@ check: test
 	cd src-tauri && cargo fmt --check
 	npm run build
 
+# `build` treats an unset DEST as "do not copy anywhere"; here the same emptiness
+# aimed every one of these at the root of the filesystem. The justfile has always
+# defaulted this to the current directory, which is where a build without a
+# destination leaves its copy.
+CLEAN_DEST := $(or $(DEST),.)
+
 clean:
-	rm -rf "$(DEST)/ReelDrive.app" "$(DEST)/ReelDrive.AppImage" "$(DEST)/ReelDrive.exe"
-	rm -f "$(DEST)/ffmpeg" "$(DEST)/ffprobe" "$(DEST)/ffmpeg.exe" "$(DEST)/ffprobe.exe"
+	rm -rf "$(CLEAN_DEST)/ReelDrive.app" "$(CLEAN_DEST)/ReelDrive.AppImage" "$(CLEAN_DEST)/ReelDrive.exe"
+	rm -f "$(CLEAN_DEST)/ffmpeg" "$(CLEAN_DEST)/ffprobe" "$(CLEAN_DEST)/ffmpeg.exe" "$(CLEAN_DEST)/ffprobe.exe"
