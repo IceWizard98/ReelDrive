@@ -1,4 +1,5 @@
 <script>
+  import Logo from "./Logo.svelte";
   import Tile from "./Tile.svelte";
 
   // The query lives in App: opening a title unmounts this component, and a
@@ -150,6 +151,12 @@
 <div class="topcover" aria-hidden="true"></div>
 
 <header>
+  <!-- The one place the application says its own name. The header carried the
+       volume's name and the stick's counts, which are the *content's*
+       identity, and nothing at all said what was reading them — on a wide
+       window the whole middle of the bar was empty besides. -->
+  <span class="brand"><Logo size={46} /></span>
+
   <p class="volume">
     <span class="eyebrow">Volume</span>
     <span class="name">{volume}</span>
@@ -283,6 +290,17 @@
 
   /* The signature line: a rented catalogue cannot tell you what is on the
      shelf, this one can. */
+  /* Dimmer than the volume name beside it: this is the thing that never
+     changes, and the name of what you plugged in is the thing that does. */
+  .brand {
+    display: flex;
+    /* Big enough for the sprocket holes to read as holes. Below about forty
+       pixels the filmstrip turns to grain and the mark stops being a picture of
+       anything. */
+    color: var(--text-2);
+    margin-right: var(--space-3xs);
+  }
+
   .volume {
     margin: 0;
     display: grid;
