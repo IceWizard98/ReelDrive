@@ -9,6 +9,15 @@ vi.mock("./api.js", () => ({
   getPlaybackSource: vi.fn(),
   stopStream: vi.fn(),
   openAuthorSite: vi.fn(),
+  // The player reaches for its own half of the bridge the moment it mounts,
+  // and one of these tests takes the app all the way into a film.
+  audioUrl: vi.fn(),
+  seekUrl: vi.fn(),
+  subtitleUrl: vi.fn(),
+  fallbackUrl: vi.fn(),
+  playbackFailure: vi.fn(),
+  isFullscreen: vi.fn(),
+  setFullscreen: vi.fn(),
   fileUrl: () => null,
   initials: (t) => t.slice(0, 2).toUpperCase(),
   placeholderStyle: () => "",
@@ -23,10 +32,32 @@ const LIBRARY = {
   warnings: [],
 };
 
+const MOVIE = {
+  summary: LIBRARY.contents[0],
+  body: { kind: "movie", file: "Dune (2021)/Dune.mkv", subtitles: [] },
+};
+
+const SOURCE = {
+  url: "http://127.0.0.1:9/stream?path=Dune.mkv",
+  delivery: "direct",
+  duration: 3600,
+  title: "Dune",
+  video_codec: "h264",
+  subtitles: [],
+  audio: [],
+  audio_track: 0,
+  offset: 0,
+  bitmap_subtitles: 0,
+};
+
 beforeEach(() => {
   vi.clearAllMocks();
   api.getLibrary.mockResolvedValue(LIBRARY);
   api.openAuthorSite.mockResolvedValue(null);
+  api.getContent.mockResolvedValue(MOVIE);
+  api.getPlaybackSource.mockResolvedValue(SOURCE);
+  api.playbackFailure.mockResolvedValue(null);
+  api.isFullscreen.mockResolvedValue(false);
 });
 
 describe("the credit", () => {
@@ -58,6 +89,29 @@ describe("the credit", () => {
     await fireEvent.click(await screen.findByRole("button", { name: "Luis Enriquez" }));
     await waitFor(() => expect(api.openAuthorSite).toHaveBeenCalled());
     expect(screen.getByText("luise.ac")).toBeInTheDocument();
+  });
+
+  it("says so when the click opened nothing", async () => {
+    // Surviving is not enough. The button is the only thing on screen that
+    // answers a press, and on a machine with no browser it answers with
+    // nothing at all — a dead control, indistinguishable from a broken app,
+    // and the user is never told that the printed address is now their only
+    // way to the site.
+    api.openAuthorSite.mockRejectedValue("no handler");
+    render(App);
+    await fireEvent.click(await screen.findByRole("button", { name: "Luis Enriquez" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent(/browser/i);
+  });
+
+  it("is not over the film", async () => {
+    // A credit line across the bottom of a picture is the one place it must
+    // never be, and it is the guard a later hand is most likely to drop.
+    render(App);
+    await fireEvent.click(await screen.findByRole("button", { name: /Dune/ }));
+    await fireEvent.click(await screen.findByRole("button", { name: /^Play/ }));
+    await waitFor(() =>
+      expect(screen.queryByRole("button", { name: "Luis Enriquez" })).not.toBeInTheDocument(),
+    );
   });
 
   it("is on the welcome screen too, where nothing has been set up yet", async () => {

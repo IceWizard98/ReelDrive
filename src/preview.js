@@ -188,9 +188,13 @@ window.__TAURI_INTERNALS__ = {
       case "playback_failure":
         return null;
       // The harness runs in a browser, where there is no shell to hand a URL
-      // to. Saying so beats a silent success the credit line would trust.
+      // to, so the nearest thing is a tab. A blocked popup comes back as null,
+      // and reporting that is the only way the harness ever shows the footer's
+      // failure line — the case the real app hits on a machine with no browser.
       case "open_author_site":
-        window.open("https://luise.ac", "_blank", "noopener");
+        if (!window.open("https://luise.ac", "_blank", "noopener")) {
+          throw "the browser blocked the window";
+        }
         return null;
       default:
         throw `unknown command: ${command}`;

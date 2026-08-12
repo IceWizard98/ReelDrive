@@ -398,16 +398,30 @@ pub const AUTHOR_URL: &str = "https://luise.ac";
 ///
 /// A process rather than a plugin: the app already runs ffmpeg this way, and
 /// one line of `open` is a smaller thing to carry than another dependency.
-/// Waited on rather than abandoned, like every other child here: these three
-/// launchers hand the URL over and return at once, so there is nothing to
-/// block on and no orphan left behind.
-#[tauri::command]
+/// Waited on rather than abandoned, like every other child here — so the exit
+/// code can say the launcher found nothing to hand the address to, which on the
+/// machines this ships to is the likely answer.
+///
+/// `async`, and that is the whole point of the word here. A command without it
+/// runs inline on the thread that answers the window, and the wait below is not
+/// as short as it looks: `open` and `start` hand the URL over and return, but
+/// `xdg-open` falls back to running `$BROWSER` in the foreground and does not
+/// come back until that browser is closed. Blocking there froze the window —
+/// no scroll, no Escape, no close button — for the length of a browsing
+/// session. Every other blocking child in this app already runs on a thread of
+/// its own; the stream server's ffmpeg waits on its own request thread.
+#[tauri::command(async)]
 fn open_author_site() -> Result<(), String> {
     let (program, leading): (&str, &[&str]) = if cfg!(target_os = "macos") {
         ("open", &[])
     } else if cfg!(target_os = "windows") {
         // `start` is a shell builtin, and its first quoted argument is taken as
         // the window title rather than the thing to open — hence the empty one.
+        //
+        // The address being a constant is what keeps this safe: Rust quotes an
+        // argument only when it holds a space, and `cmd` reads an unquoted `&`
+        // as the end of one command and the start of the next. The day the
+        // address becomes a parameter, this line is where it goes wrong first.
         ("cmd", &["/C", "start", ""])
     } else {
         ("xdg-open", &[])

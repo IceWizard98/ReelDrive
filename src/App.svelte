@@ -28,6 +28,21 @@
   let pending = $state(null);
   // Outlives Home, which is unmounted whenever a title is open.
   let query = $state("");
+  // A press that opens nothing is a dead button, and this app is built for
+  // machines where there may be no browser to open at all. Not the error toast:
+  // that one is only rendered once a library exists, and on the screen that
+  // reports a failed scan `error` is the page's own sentence — a browser that
+  // did not open would rewrite it.
+  let noBrowser = $state(false);
+
+  async function openCredit() {
+    try {
+      await openAuthorSite();
+      noBrowser = false;
+    } catch {
+      noBrowser = true;
+    }
+  }
 
   async function startPlayback(relativePath, external = []) {
     if (busy) return;
@@ -175,9 +190,12 @@
        over a picture. -->
   <footer>
     Made by
-    <button onclick={() => openAuthorSite().catch(() => {})}>Luis Enriquez</button>
+    <button onclick={openCredit}>Luis Enriquez</button>
     <span aria-hidden="true">·</span>
     <span class="site">luise.ac</span>
+    {#if noBrowser}
+      <span class="failed" role="alert">— no browser opened; the address is there to type</span>
+    {/if}
   </footer>
 {/if}
 
@@ -324,6 +342,12 @@
      somewhere else. */
   .site {
     font-variant-numeric: tabular-nums;
+  }
+
+  /* Dimmer than the address it points at: the sentence is the explanation, the
+     address is the thing to act on. */
+  .failed {
+    color: var(--text-3);
   }
 
   .welcome {
