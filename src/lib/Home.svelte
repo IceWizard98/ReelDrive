@@ -12,30 +12,47 @@
     focusId = null,
     pending = null,
     query = $bindable(""),
+    kind = $bindable("all"),
   } = $props();
+
+  // Same reasoning as the query, and the same place to live: opening a title
+  // unmounts this component, and a filter that forgets itself every time you
+  // look at one of its own results is a filter you set twice.
+  const KINDS = [
+    ["all", "All"],
+    ["series", "Series"],
+    ["movie", "Movies"],
+  ];
 
   let search = $state(null);
   let grids = $state(null);
 
   let matches = $derived(
-    library.contents.filter((content) =>
-      content.title.toLowerCase().includes(query.trim().toLowerCase()),
-    ),
+    library.contents
+      .filter((content) => kind === "all" || content.kind === kind)
+      .filter((content) => content.title.toLowerCase().includes(query.trim().toLowerCase())),
   );
 
   let series = $derived(matches.filter((c) => c.kind === "series"));
   let movies = $derived(matches.filter((c) => c.kind === "movie"));
 
-  // Searching collapses the sections: with a filter applied, one list of hits
-  // reads faster than two headed groups.
+  // Two headed groups are only worth it when both are there to be told apart.
+  // Searching collapses them, and so does a type filter — a "Series" heading
+  // over the only kind on screen is a word that says nothing.
   let sections = $derived(
     query.trim()
       ? [{ label: "Results", items: matches }]
-      : [
-          { label: "Series", items: series },
-          { label: "Movies", items: movies },
-        ].filter((section) => section.items.length > 0),
+      : kind !== "all"
+        ? [{ label: null, items: matches }]
+        : [
+            { label: "Series", items: series },
+            { label: "Movies", items: movies },
+          ].filter((section) => section.items.length > 0),
   );
+
+  // What the empty state has to say depends on which of the two narrowed it,
+  // and saying the wrong one sends the user looking in the wrong place.
+  let narrowedBy = $derived(query.trim() ? "query" : kind !== "all" ? "kind" : null);
 
   // The stick's own name is the last path segment above the media folder.
   let volume = $derived(
@@ -166,6 +183,21 @@
     </span>
   </p>
 
+  <!-- In the middle of the bar, which had nothing in it, and between the two
+       things it sits between by right: what is on the stick, and how to narrow
+       it down. `aria-pressed` rather than tabs — these filter one list, they do
+       not switch between panels. -->
+  <div class="kinds" role="group" aria-label="Filter by type">
+    {#each KINDS as [value, label] (value)}
+      <button
+        class="kind"
+        class:active={kind === value}
+        aria-pressed={kind === value}
+        onclick={() => (kind = value)}>{label}</button
+      >
+    {/each}
+  </div>
+
   <!-- The shortcut used to be two spaces and a slash inside the placeholder
        string, which is not a hint: it reads as a character somebody left
        behind. A key looks like a key, and it goes away the moment the field is
@@ -196,21 +228,41 @@
       <button class="action" onclick={onreload}>Reload</button>
     </div>
   {:else if matches.length === 0}
+    <!-- Naming the wrong one of the two sends the user looking in the wrong
+         place: checking the spelling of a query they never typed, or hunting
+         for films on a stick that only holds series. -->
     <div class="empty">
-      <p class="lead">No titles match “{query}”</p>
-      <p>
-        Check the spelling, or
-        <button class="link" onclick={() => (query = "")}>show all {library.contents.length}</button>.
-      </p>
+      {#if narrowedBy === "query"}
+        <p class="lead">No {kind === "all" ? "titles" : kind === "series" ? "series" : "movies"} match “{query}”</p>
+        <p>
+          Check the spelling, or
+          <button class="link" onclick={() => ((query = ""), (kind = "all"))}
+            >show all {library.contents.length}</button
+          >.
+        </p>
+      {:else}
+        <p class="lead">No {kind === "series" ? "series" : "movies"} on this stick</p>
+        <p>
+          There {library.contents.length === 1 ? "is" : "are"}
+          <button class="link" onclick={() => (kind = "all")}
+            >{library.contents.length}
+            {library.contents.length === 1 ? "title" : "titles"}</button
+          > here of the other kind.
+        </p>
+      {/if}
     </div>
   {:else}
-    {#each sections as section (section.label)}
+    {#each sections as section (section.label ?? kind)}
       <section>
-        <h2>
-          <span class="eyebrow">{section.label}</span>
-          <span class="count">{section.items.length}</span>
-          <span class="rule"></span>
-        </h2>
+        <!-- No heading under a lit chip: it would repeat the chip word for
+             word, and the count it carries is already in the volume line. -->
+        {#if section.label}
+          <h2>
+            <span class="eyebrow">{section.label}</span>
+            <span class="count">{section.items.length}</span>
+            <span class="rule"></span>
+          </h2>
+        {/if}
         <div class="grid" class:grid-pending={pending !== null}>
           {#each section.items as content, index (content.id)}
             <Tile
@@ -322,6 +374,34 @@
   /* A pill, like every other control in the app now. The player's row is round
      buttons; a 6px rectangle beside them read as a form field from another
      application. */
+  /* The same pill the season tabs are, and lit the same way: a fill as well as
+     brighter text, because one shade of grey against another is no signal to
+     anyone who cannot separate them. */
+  .kinds {
+    display: flex;
+    gap: var(--space-3xs);
+  }
+
+  .kind {
+    padding: var(--space-xs) var(--space-md);
+    border-radius: var(--radius-pill);
+    font-size: var(--t-meta);
+    font-weight: 600;
+    color: var(--text-3);
+    transition:
+      background-color var(--dur-fast) var(--ease-out),
+      color var(--dur-fast) var(--ease-out);
+  }
+
+  .kind:hover {
+    color: var(--text-2);
+  }
+
+  .kind.active {
+    background: var(--ink-hi);
+    color: var(--on);
+  }
+
   .find {
     position: relative;
     margin-left: auto;

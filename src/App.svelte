@@ -28,6 +28,8 @@
   let pending = $state(null);
   // Outlives Home, which is unmounted whenever a title is open.
   let query = $state("");
+  // Outlives Home for the same reason the query does.
+  let kind = $state("all");
   // A press that opens nothing is a dead button, and this app is built for
   // machines where there may be no browser to open at all. Not the error toast:
   // that one is only rendered once a library exists, and on the screen that
@@ -180,7 +182,15 @@
     onplay={startPlayback}
   />
 {:else if library}
-  <Home {library} onopen={open} onreload={loadLibrary} focusId={cameFrom} {pending} bind:query />
+  <Home
+    {library}
+    onopen={open}
+    onreload={loadLibrary}
+    focusId={cameFrom}
+    {pending}
+    bind:query
+    bind:kind
+  />
 {/if}
 
 {#if !playing}

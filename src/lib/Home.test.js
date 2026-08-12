@@ -30,18 +30,24 @@ function home(overrides = {}, props = {}) {
   });
 }
 
+/// The section headings, by role rather than by text. The filter chips carry
+/// the same two words, so a bare text query now finds either one — which is
+/// exactly what these three tests reported the moment the chips arrived.
+const headings = () =>
+  screen
+    .queryAllByRole("heading", { level: 2 })
+    .map((h) => h.textContent.trim().split(/\s+/)[0]);
+
 describe("the grid", () => {
   it("keeps series and films apart", () => {
     home();
-    expect(screen.getByText("Series")).toBeInTheDocument();
-    expect(screen.getByText("Movies")).toBeInTheDocument();
+    expect(headings()).toEqual(["Series", "Movies"]);
   });
 
   it("drops a section nobody has anything in", () => {
     // A stick holding only films should not show an empty "Series" heading.
     home({ contents: CONTENTS.filter((c) => c.kind === "movie") });
-    expect(screen.queryByText("Series")).toBeNull();
-    expect(screen.getByText("Movies")).toBeInTheDocument();
+    expect(headings()).toEqual(["Movies"]);
   });
 
   it("names the stick from the folder above the media one", () => {
@@ -56,6 +62,65 @@ describe("the grid", () => {
   });
 });
 
+describe("the type filter", () => {
+  const chip = (name) => screen.getByRole("button", { name });
+
+  it("shows everything until asked otherwise", () => {
+    home();
+    expect(chip("All")).toHaveAttribute("aria-pressed", "true");
+    expect(screen.getByText("Scrubs")).toBeInTheDocument();
+    expect(screen.getByText("Dune")).toBeInTheDocument();
+  });
+
+  it("keeps only series, under no heading at all", async () => {
+    home();
+    await fireEvent.click(chip("Series"));
+
+    expect(screen.getByText("Scrubs")).toBeInTheDocument();
+    expect(screen.queryByText("Dune")).toBeNull();
+    // A lit chip already says which kind this is, and the count it would carry
+    // is in the volume line above: the heading would be a stutter.
+    expect(headings()).toEqual([]);
+  });
+
+  it("keeps only films", async () => {
+    home();
+    await fireEvent.click(chip("Movies"));
+
+    expect(screen.getByText("Dune")).toBeInTheDocument();
+    expect(screen.queryByText("Scrubs")).toBeNull();
+  });
+
+  it("narrows the search rather than replacing it", async () => {
+    // The two are not alternatives. Typing then filtering has to leave both
+    // applied, or the filter silently throws the query away.
+    home({}, { query: "e" });
+    await fireEvent.click(chip("Movies"));
+
+    const shown = screen.queryAllByRole("button", { name: /^(Scrubs|Dune|Inception)/ });
+    expect(shown.map((b) => b.textContent.trim().split("\n")[0])).not.toContain("Scrubs");
+  });
+
+  it("says which of the two emptied the grid", async () => {
+    // Naming the wrong one sends the user checking the spelling of a query
+    // they never typed.
+    home({ contents: CONTENTS.filter((c) => c.kind === "movie") });
+    await fireEvent.click(chip("Series"));
+
+    expect(screen.getByText(/No series on this stick/)).toBeInTheDocument();
+    expect(screen.queryByText(/Check the spelling/)).toBeNull();
+  });
+
+  it("offers the way back out of an empty filter", async () => {
+    home({ contents: CONTENTS.filter((c) => c.kind === "movie") });
+    await fireEvent.click(chip("Series"));
+    await fireEvent.click(screen.getByRole("button", { name: /titles?$/ }));
+
+    expect(chip("All")).toHaveAttribute("aria-pressed", "true");
+    expect(screen.getByText("Dune")).toBeInTheDocument();
+  });
+});
+
 describe("searching", () => {
   it("keeps only what matches, whatever the case", () => {
     home({}, { query: "dune" });
@@ -66,9 +131,7 @@ describe("searching", () => {
   it("collapses the two sections into one list of hits", () => {
     // With a filter applied, one list reads faster than two headed groups.
     home({}, { query: "e" });
-    expect(screen.getByText("Results")).toBeInTheDocument();
-    expect(screen.queryByText("Series")).toBeNull();
-    expect(screen.queryByText("Movies")).toBeNull();
+    expect(headings()).toEqual(["Results"]);
   });
 
   it("ignores the spaces around what was typed", () => {
