@@ -88,28 +88,105 @@ One folder per title. Everything else is read from the names on disk.
 | one video | film |
 | no video | skipped, and reported on the home screen |
 
-**Titles.** `The.Matrix.1999.1080p.BluRay.x264` reads as *The Matrix*, 1999. A
-year in brackets always counts; a bare one only when something follows it, so
-`Blade Runner 2049` keeps its number.
+Every row of every table below is a real output of the parser, not an
+illustration: the same cases are pinned by tests in
+[`core/naming.rs`](src-tauri/src/core/naming.rs).
 
-**Seasons.** `Specials` and `Extras` become season 0. A season folder may carry
-a label after its number — `Season 1 - Il principio` — and the list shows the
-name you gave it. Folders the app does not recognise at all (`Prima Stagione`,
-`Parte 1`) still become seasons, in natural order, and keep their own names.
-Episodes loose in the root are placed by their own markers, so `S01E01.mkv` and
-`S03E01.mkv` side by side give you seasons 1 and 3.
+### Title and year, from the folder name
 
-**Episodes.** Numbers are read from `S01E02`, `1x02`, `Episodio 4`, `Ep 04`,
-`E05`, or a leading number. If any file in a season lacks one, the whole season
-is numbered in natural order instead (`ep2` before `ep10`), so numbers can never
-collide.
+Dots and underscores become spaces, and everything from the year onwards is
+dropped — which is what removes release tags without a list of them to match.
 
-**Subtitles.** `.srt`, `.ass`, `.ssa`, `.sub`, `.vtt` beside the video and
-sharing its name: `Inception.mkv` picks up `Inception.srt` and
-`Inception.it.srt`.
+| Folder name | Title | Year |
+| --- | --- | --- |
+| `Inception (2010)` | Inception | 2010 |
+| `Dune [2021]` | Dune | 2021 |
+| `Amélie (2001)` | Amélie | 2001 |
+| `The.Matrix.1999.1080p.BluRay.x264` | The Matrix | 1999 |
+| `How_I_Met_Your_Mother` | How I Met Your Mother | — |
+| `Scrubs` | Scrubs | — |
+| `Blade Runner 2049` | Blade Runner 2049 | — |
+| `Blade Runner 2049 (2017)` | Blade Runner 2049 | 2017 |
+| `(2010)` | (2010) | — |
 
-**Covers.** `cover`, `poster`, `folder`, `fanart`, `banner` or `thumb`, in that
-order; any other image in the folder is used as a fallback.
+The last three are the rule worth knowing. **A year in brackets always counts. A
+bare one only counts when something follows it**, so `2049` at the end of a name
+belongs to the title — and when the two appear together, the bracketed one wins.
+A name that is *only* a year is kept whole, because a title has to be called
+something.
+
+### Season, from the folder name
+
+| Folder name | Season | Listed as |
+| --- | --- | --- |
+| `Season 1` | 1 | Season 1 |
+| `S02` | 2 | Season 2 |
+| `s3` | 3 | Season 3 |
+| `Stagione 3` | 3 | Season 3 |
+| `Season_4`, `Season.5` | 4, 5 | Season 4, Season 5 |
+| `Season 1 - inizio` | 1 | **Season 1 - inizio** |
+| `Stagione 2 — La vendetta` | 2 | **Stagione 2 — La vendetta** |
+| `S03 - Finale` | 3 | **S03 - Finale** |
+| `Specials`, `Extras`, `Bonus` | 0 | Specials, Extras, Bonus |
+| `Prima Stagione`, `Parte 1` | by position | **Prima Stagione**, **Parte 1** |
+| `S01E02`, `Season 1x02`, `Season 1080p` | not a season | — |
+
+Two rules sit behind that:
+
+**A label after the number is yours and is kept.** Nobody else knows what
+`inizio` means, so replacing it with `Season 1` would be replacing information
+with a guess. A folder that says nothing beyond its number gets the canonical
+`Season N` instead, so `S02` and `stagione 2` do not read as two different
+things.
+
+**A marker glued to the number is not a season.** One alphanumeric character
+touching the digits is the whole difference between `Season 1 - inizio` and
+`S01E02`, which is a file's marker and must never become a folder of its own.
+
+Folders the app does not recognise at all still become seasons if they hold
+episodes — in natural order, keeping their names. A recognised season name
+always wins over them.
+
+### Season and episode, from the file name
+
+Five forms, tried in this order. The first one found wins, so a file carrying
+two markers is placed by the first.
+
+| File name (without extension) | Season | Episode | Shown as |
+| --- | --- | --- | --- |
+| `Scrubs S01E02 - My Mentor` | 1 | 2 | My Mentor |
+| `scrubs s1e2` | 1 | 2 | Episode 2 |
+| `Show 1x03` | 1 | 3 | Episode 3 |
+| `Episodio 6` | from the folder | 6 | Episode 6 |
+| `Episode 4 - Titolo` | from the folder | 4 | Titolo |
+| `Ep 04 - Title` | from the folder | 4 | Title |
+| `E05` | from the folder | 5 | Episode 5 |
+| `04 - Pilot` | from the folder | 4 | Pilot |
+| `Show S01E02E03` | 1 | 2 | E03 |
+| `Pilot` | — | by position | Pilot |
+
+**The title is whatever follows the marker**, trimmed of dashes and dots. A file
+that is only a marker has no title of its own and is listed as `Episode N`.
+
+**The season folder outranks a marker that disagrees with it.**
+`Season 4/Show S01E07.mkv` is season 4, episode 7: the folder is the thing you
+arranged by hand, and the episode number is the part the folder cannot say.
+Files loose in the content root have no folder to defer to, so their own markers
+place them — `S01E01.mkv` and `S03E01.mkv` side by side give seasons 1 and 3,
+with no season 2 invented to sit between them. Loose files with no season marker
+all land in season 1, because nothing in the name says otherwise.
+
+**Numbering falls back together, never halfway.** Markers are used only if every
+file in the season has one; a single file without sends the whole season to
+natural order (`ep2` before `ep10`), so two episodes can never claim the same
+number.
+
+### Subtitles and covers
+
+| Kind | Matched by |
+| --- | --- |
+| Subtitles | `.srt` `.ass` `.ssa` `.sub` `.vtt` beside the video, sharing its name — `Inception.mkv` takes `Inception.srt` and `Inception.it.srt` |
+| Covers | `cover`, `poster`, `folder`, `fanart`, `banner`, `thumb`, in that order; any other image in the folder is the fallback |
 
 ## Playback
 
