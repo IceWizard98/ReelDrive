@@ -384,9 +384,13 @@ fn stop_playback(state: State<'_, AppState>) {
     state.server.stop();
 }
 
-/// Who made this, and where to find them. The window shows the name; this is
-/// the only thing that knows the address.
-pub const AUTHOR: &str = "Luis Enriquez";
+/// Where to find the author. The name lives in the window, which is the only
+/// place it is ever shown; a second copy here was read by nothing, and the two
+/// had to be renamed together with nothing to say so if one was forgotten.
+///
+/// The address is here rather than there because it is not a label: it is what
+/// the command below hands to a shell, and it stays a constant so there is no
+/// parameter to abuse.
 pub const AUTHOR_URL: &str = "https://luise.ac";
 
 /// Open the author's site in the user's own browser.
