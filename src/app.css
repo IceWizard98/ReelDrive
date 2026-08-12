@@ -1,0 +1,243 @@
+/* Design tokens.
+ *
+ * The app ships on a stick and never touches the network, so there are no web
+ * fonts: hierarchy comes from scale, weight and tracking on system faces.
+ * There is no accent colour either. The only colour in this app is the covers
+ * and the film, and every hue put beside them was competing with them. */
+:root {
+  --ink: #08080b;
+  --ink-raised: #101015;
+  /* The surface a row wears while the pointer is on it. #17171f was 1.14:1
+     against the page: in a list of 24 identical episodes the row under the
+     cursor did not visibly change, and on this app clicking the wrong one
+     costs an ffmpeg launch. */
+  --ink-hi: #2b2b36;
+
+  /* Three tiers of line, because a decorative separator and the edge of a
+     control do not have the same job. Ratios against --ink #08080b.
+     --line-strong clears the 3:1 that WCAG 1.4.11 asks of a control whose
+     boundary is the only thing identifying it — which was exactly the search
+     field's problem. */
+  --line-soft: #2e2e38; /* 1.49:1 — row separators */
+  --line: #3f3f4c; /* 1.93:1 — surface edges */
+  --line-strong: #5c5c68; /* 3.03:1 — interactive controls */
+
+  --text: #f5f5f7;
+  --text-2: #a0a0ac;
+  /* The third tier still carries content — years, episode numbers, the skipped
+     folders, the path in the welcome screen — so it has to be readable, not
+     merely present. #6b6b78 was 3.8:1 on --ink and 3.4:1 on --ink-hi, under the
+     4.5:1 that 12px text needs; this clears it on all three surfaces (5.4 / 5.1
+     / 4.8) and still reads as a step below --text-2. */
+  --text-3: #84848f;
+
+  /* "This is the one." Focus rings, the chosen track, the season you are
+     looking at, the tile you just clicked.
+     It used to be amber, and the accent was the mistake: the app has exactly
+     one source of colour, which is the pictures, and an orange competing with
+     them made the player look like a different application every time a frame
+     went cyan. Monochrome is the position, not an absence of one — so "chosen"
+     is white against grey, and always with a fill or a tick as well, never
+     colour alone. */
+  --on: #f5f5f7;
+
+  /* Type scale — deliberate jumps, not three sizes within 9px of each other. */
+  --t-eyebrow: 0.6875rem;
+  --t-meta: 0.75rem;
+  --t-body: 0.875rem;
+  --t-tile: 0.9375rem;
+  --t-section: 1.125rem;
+  --t-display: clamp(2rem, 4.5vw, 3rem);
+
+  /* Space. Eleven steps, and the app had thirty values between 0.1 and 3.5rem
+     picked one at a time. Only the ones a step already described — or sat
+     within 0.05rem of, which is under a pixel — were moved onto it; a handful
+     of deliberate odd numbers are still written out where they are used, and
+     they read as deliberate now that the rest do not. */
+  --space-3xs: 0.15rem;
+  --space-2xs: 0.25rem;
+  --space-xs: 0.35rem;
+  --space-sm: 0.5rem;
+  --space-md: 0.75rem;
+  --space-lg: 1rem;
+  --space-xl: 1.5rem;
+  --space-2xl: 2rem;
+  --space-3xl: 2.5rem;
+  --space-4xl: 3rem;
+  --space-5xl: 3.5rem;
+
+  --gutter: clamp(1.25rem, 3.5vw, 2.5rem);
+  --radius: 6px;
+  --radius-sm: 4px;
+  --radius-xs: 3px;
+  /* Posters and the rows inside a panel. 6px on a 200px poster reads as a
+     thumbnail from a file manager, 14px as a card with nothing on it; a poster
+     is neither, and next to the player's panels 6px was the corner that dated
+     the library screen. */
+  --radius-md: 10px;
+  /* Two more, for surfaces rather than controls: a panel that floats over the
+     picture needs a corner the eye reads as an object, and a bar that holds
+     round buttons needs one that agrees with them. */
+  --radius-lg: 14px;
+  --radius-pill: 999px;
+
+  /* Glass. Born in the player, where a panel on the frame has to be readable on
+     a night shot and on snow — which no flat colour manages on both. The
+     library screens borrow it wherever something really does sit over moving
+     content: the sticky header a grid scrolls under, and the panels on the
+     detail page that sit on the blurred cover. */
+  --glass: #12121aa6;
+  --glass-line: #ffffff1f;
+  --lift: 0 10px 30px #00000073;
+
+  /* Motion. Three durations and two curves cover everything in the app except
+     the two indicators, which are cycles and keep their own numbers. `ease`
+     starts slow and ends slow: on an entrance it wastes the first frames,
+     which is where the eye is. */
+  --dur-fast: 120ms;
+  --dur: 180ms;
+  --dur-slow: 260ms;
+  --ease-out: cubic-bezier(0.2, 0.7, 0.3, 1);
+  --ease-in-out: cubic-bezier(0.65, 0, 0.35, 1);
+
+  --ui: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Ubuntu, system-ui,
+    sans-serif;
+
+  color-scheme: dark;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  height: 100%;
+  background: var(--ink);
+  color: var(--text);
+  font-family: var(--ui);
+  font-size: 16px;
+  overflow-x: hidden;
+  -webkit-font-smoothing: antialiased;
+}
+
+button {
+  font: inherit;
+  color: inherit;
+  border: none;
+  background: none;
+  cursor: pointer;
+}
+
+input {
+  font: inherit;
+  color: inherit;
+}
+
+:focus-visible {
+  outline: 2px solid var(--on);
+  outline-offset: 2px;
+}
+
+/* Small uppercase label. Used for anything that classifies rather than names:
+ * section headings, the volume line, content type. */
+.eyebrow {
+  font-size: var(--t-eyebrow);
+  font-weight: 600;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--text-3);
+}
+
+/* Poster surface, shared by real covers and generated tiles. A hairline and a
+ * shadow keep dark artwork from dissolving into the background. */
+.art {
+  aspect-ratio: 2 / 3;
+  width: 100%;
+  height: 100%;
+  border-radius: var(--radius-md);
+  object-fit: cover;
+  display: block;
+  background: var(--ink-raised);
+  box-shadow:
+    inset 0 0 0 1px #ffffff14,
+    0 2px 10px #00000066;
+}
+
+.art-generated {
+  display: grid;
+  place-items: center;
+  background:
+    radial-gradient(120% 90% at 50% 0%, hsl(var(--tile-hue) 42% 30%), transparent 70%),
+    linear-gradient(hsl(var(--tile-hue) 38% 20%), hsl(var(--tile-hue) 40% 9%));
+}
+
+.art-generated span {
+  font-size: clamp(1.75rem, 4vw, 2.75rem);
+  font-weight: 800;
+  letter-spacing: 0.06em;
+  color: #ffffffb3;
+}
+
+/* Only for a live region: text a screen reader reads and nothing else shows.
+ * `display: none` and `visibility: hidden` are both skipped by the reader,
+ * which is why this has to take the long way round. */
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+/* The two "something is happening" animations live here rather than in their
+ * components: keyframes inside a Svelte component are renamed per component,
+ * and the reduced-motion rule below has to be able to name them. */
+@keyframes reel-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@keyframes reel-sweep {
+  0% {
+    background-position: -40% 0;
+  }
+  100% {
+    background-position: 140% 0;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    /* Delays matter as much as durations: a staggered entrance whose animation
+       fills backwards keeps elements invisible for the length of the delay,
+       however short the animation itself is. */
+    animation-delay: 0ms !important;
+    transition-delay: 0ms !important;
+  }
+
+  /* Except the two whose whole function is to move. The rule above stopped the
+     spinner mid-circle and froze the activity bar with its gradient outside
+     the element — 2px of nothing — so during a conversion that runs for
+     half a minute the app had no way left to say it was working. Reduced
+     motion asks for less movement, not for none: an indicator of activity is
+     the definition of essential movement. Both selectors beat the `*` above on
+     specificity, which is what decides between two `!important`. */
+  .spinner {
+    animation: reel-spin 1.8s linear infinite !important;
+  }
+
+  .progress {
+    animation: reel-sweep 2.4s ease-in-out infinite !important;
+  }
+}
