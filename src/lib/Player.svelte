@@ -235,6 +235,10 @@
   $effect(() => () => {
     clearTimeout(hideTimer);
     clearTimeout(nudgeTimer);
+    // Armed by every resize, and a resize is exactly what leaving full screen
+    // produces: without this the query still went out afterwards, to answer a
+    // question about a player that no longer exists.
+    clearTimeout(syncTimer);
     // Left running, it keeps pulling segments from a session the backend is
     // about to replace. Bumping the token first disowns an attach still waiting
     // on its import, which would otherwise build an instance after this ran.
@@ -318,6 +322,16 @@
     clearTimeout(syncTimer);
     syncTimer = setTimeout(async () => (fullscreen = await isFullscreen()), 150);
   }
+
+  // And once at the start, because the window can already be full screen when a
+  // film opens: nothing brings the desktop back on the way out of the last one,
+  // so leaving by the back button puts the library on a full-screen window.
+  // Starting the next film at `false` was the same lie the resize handler
+  // exists to prevent — a button offering "Full screen" from a full screen, and
+  // an Escape that closes the film with the desktop still gone.
+  $effect(() => {
+    syncFullscreen();
+  });
 
   async function toggleFullscreen() {
     show();

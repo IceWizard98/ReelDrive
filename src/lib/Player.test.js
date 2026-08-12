@@ -164,6 +164,44 @@ describe("full screen", () => {
     await fireEvent.keyDown(window, { key: "Escape" });
     expect(onexit).toHaveBeenCalledTimes(1);
   });
+
+  it("asks where the window already is instead of assuming it is windowed", async () => {
+    // Nothing brings the desktop back on the way out of a film: leaving by the
+    // back button — the one way out that is not Escape — puts the library on a
+    // full-screen window. The next film then started with the flag at false, so
+    // the button offered "Full screen" while the screen was already full, and
+    // Escape read the same false and closed the film with the desktop still
+    // gone: the two-things-at-once this was fixed to avoid.
+    const onexit = vi.fn();
+    api.isFullscreen.mockResolvedValue(true);
+    render(Player, {
+      props: { source: source(), relativePath: "Film.mkv", onexit },
+    });
+
+    expect(
+      await screen.findByRole("button", { name: "Leave full screen" }),
+    ).toBeInTheDocument();
+
+    api.setFullscreen.mockResolvedValue(false);
+    await fireEvent.keyDown(window, { key: "Escape" });
+    expect(onexit).not.toHaveBeenCalled();
+    expect(api.setFullscreen).toHaveBeenCalledWith(false, expect.anything());
+  });
+
+  it("leaves no question in flight once the player is gone", async () => {
+    // The answer arrives 150 ms after a resize, and leaving the film in that
+    // window used to fire the query anyway — a round trip to a window whose
+    // player no longer exists, written into state nothing reads.
+    const { unmount } = play();
+    await waitFor(() => expect(api.isFullscreen).toHaveBeenCalled());
+
+    api.isFullscreen.mockClear();
+    await fireEvent(window, new Event("resize"));
+    unmount();
+    await new Promise((resolve) => setTimeout(resolve, 250));
+
+    expect(api.isFullscreen).not.toHaveBeenCalled();
+  });
 });
 
 describe("the wait indicator", () => {
