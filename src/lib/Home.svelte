@@ -175,16 +175,18 @@
        Forty-six, because below about forty the sprocket holes stop reading as
        holes: the filmstrip turns to grain and the mark stops being a picture of
        anything. -->
-  <span class="brand"><Logo size={46} /></span>
+  <div class="identity">
+    <span class="brand"><Logo size={46} /></span>
 
-  <p class="volume">
-    <span class="eyebrow">Volume</span>
-    <span class="name">{volume}</span>
-    <span class="counts">
-      {library.contents.length} titles · {library.contents.filter((c) => c.kind === "series").length}
-      series · {library.contents.filter((c) => c.kind === "movie").length} movies
-    </span>
-  </p>
+    <p class="volume">
+      <span class="eyebrow">Volume</span>
+      <span class="name">{volume}</span>
+      <span class="counts">
+        {library.contents.length} titles · {library.contents.filter((c) => c.kind === "series").length}
+        series · {library.contents.filter((c) => c.kind === "movie").length} movies
+      </span>
+    </p>
+  </div>
 
   <!-- In the middle of the bar, which had nothing in it, and between the two
        things it sits between by right: what is on the stick, and how to narrow
@@ -298,16 +300,14 @@
      that made the app look like two different products. The blur is real work
      here: posters scroll under it. */
   header {
-    display: flex;
+    display: grid;
     align-items: center;
-    /* A belt to go with the window minimum: below ~400px the volume line and
-       the search field used to compress into each other until the counts broke
-       over three lines. `margin-left: auto` on the input keeps it right where
-       it is as long as they share a row. */
-    flex-wrap: wrap;
-    /* Tighter across than down. The chips belong to the volume line they
-       narrow, and a gap the width of the search field's own inset read as
-       three unrelated things sharing a bar. */
+    /* Three columns, and the outer two share what is left equally, which is the
+       only way the middle one lands in the middle: the identity block and the
+       search field are never the same width, so anything that packs them in a
+       row leaves the control between them adrift — nearer whichever side is
+       narrower, and moving as the volume's name changes length. */
+    grid-template-columns: 1fr auto 1fr;
     gap: var(--space-lg) var(--space-md);
     padding: var(--space-md) var(--space-md) var(--space-md) 1.1rem;
     margin: var(--space-md) var(--gutter) var(--space-xl);
@@ -348,6 +348,15 @@
 
   /* Dimmer than the volume name beside it: this is the thing that never
      changes, and the name of what you plugged in is the thing that does. */
+  /* One column, so the mark and the volume travel together and the grid has a
+     single thing to weigh against the search field. */
+  .identity {
+    display: flex;
+    align-items: center;
+    gap: var(--space-md);
+    min-width: 0;
+  }
+
   .brand {
     display: flex;
     color: var(--text-2);
@@ -437,7 +446,7 @@
      application. */
   .find {
     position: relative;
-    margin-left: auto;
+    justify-self: end;
     display: flex;
     align-items: center;
   }
@@ -584,6 +593,35 @@
 
   .warnings summary {
     cursor: pointer;
+  }
+
+  /* Below this the three columns stop fitting side by side, and a middle one
+     held in the middle only squeezes the two beside it. Stacked, the control
+     keeps its own row and the search field gets the width back. */
+  @media (max-width: 900px) {
+    header {
+      grid-template-columns: 1fr auto;
+    }
+
+    /* Two rows, not three. The identity and the search keep the top one — they
+       are what the bar is for — and the control drops beneath them across the
+       whole width. Stacking all three costs sixty pixels of height on a window
+       that is already short enough to have a minimum. */
+    .identity {
+      grid-area: 1 / 1;
+    }
+
+    .find {
+      grid-area: 1 / 2;
+    }
+
+    /* Its own width, not the column's: a grid item fills its track, and a
+       segmented control stretched across the whole bar stops looking like
+       three choices and starts looking like a progress bar. */
+    .kinds {
+      grid-area: 2 / 1 / 3 / -1;
+      justify-self: start;
+    }
   }
 
   .warnings ul {
