@@ -1,5 +1,10 @@
 <div align="center">
 
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset=".github/logo-dark.svg">
+  <img src=".github/logo.svg" alt="" width="132">
+</picture>
+
 # ReelDrive
 
 **Your film library on a USB stick. One executable, one folder, no installation.**
