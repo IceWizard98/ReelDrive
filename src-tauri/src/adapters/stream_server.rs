@@ -323,8 +323,15 @@ impl StreamServer {
     /// Dropping the server would do this, but the application state holding it
     /// is not guaranteed to be dropped on exit — and an ffmpeg that outlives the
     /// window keeps a CPU busy for a film nobody is watching.
+    ///
+    /// Lifted out under the lock and dropped after it, for the reason
+    /// `start_hls` sets out at length: the teardown kills ffmpeg, waits for it
+    /// and deletes every segment written so far, and every request thread takes
+    /// this same lock. Assigning `None` through the guard runs all of that with
+    /// the lock still held.
     pub fn stop(&self) {
-        *locked(&self.session) = None;
+        let ended = locked(&self.session).take();
+        drop(ended);
     }
 
     /// URL for one subtitle track, as WebVTT, cut to the same `start` the
@@ -1345,6 +1352,66 @@ sleep 120"#,
             !process_alive(live_pid),
             "pid {live_pid} outlived the server"
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn stopping_a_session_lets_go_of_the_lock_before_tearing_it_down() {
+        // The same rule `start_hls` spells out, on the other way out. The
+        // teardown kills ffmpeg, waits for it and deletes every segment the
+        // conversion wrote, and every request thread takes this lock to find
+        // the directory it is serving from: run under the lock, a film left
+        // after two hours holds up the next one for as long as the delete
+        // takes. Assigning through the guard is what does that, and it is one
+        // character away from being right.
+        let (server, _dir) = hls_server(
+            r#"for a in "$@"; do case "$a" in *index.m3u8) OUT="$a";; esac; done
+printf '#EXTM3U\n' > "$OUT"
+sleep 30"#,
+        );
+        server
+            .stream_url("Movie/Movie.mkv", 0.0, Delivery::Remux, None, 0)
+            .expect("session");
+
+        // A long conversion is what makes the teardown slow, and its cost is
+        // the segment count; four thousand of them stands in for it.
+        let dir = locked(&server.session)
+            .as_ref()
+            .expect("a session")
+            .dir
+            .clone();
+        for i in 0..4000 {
+            std::fs::write(dir.join(format!("seg{i:05}.m4s")), b"x").expect("segment");
+        }
+
+        // The signal is both halves at once: the lock free *and* the session
+        // already lifted out of it, while the directory is still being
+        // removed. Free but still holding the session is only this thread
+        // winning the race to the lock before `stop` reached it.
+        let session = Arc::clone(&server.session);
+        let watched = dir.clone();
+        let barrier = Arc::new(std::sync::Barrier::new(2));
+        let start = Arc::clone(&barrier);
+        let watcher = std::thread::spawn(move || {
+            start.wait();
+            let deadline = Instant::now() + Duration::from_secs(10);
+            while watched.exists() && Instant::now() < deadline {
+                if session.try_lock().is_ok_and(|held| held.is_none()) {
+                    return true;
+                }
+                std::thread::yield_now();
+            }
+            false
+        });
+
+        barrier.wait();
+        server.stop();
+
+        assert!(
+            watcher.join().expect("watcher"),
+            "the session lock was held for the whole teardown"
+        );
+        assert!(!dir.exists(), "the session directory outlived the stop");
     }
 
     /// `kill -0`: the process is gone once this fails. A zombie would still
