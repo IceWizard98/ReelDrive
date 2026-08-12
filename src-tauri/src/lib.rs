@@ -384,6 +384,51 @@ fn stop_playback(state: State<'_, AppState>) {
     state.server.stop();
 }
 
+/// Who made this, and where to find them. The window shows the name; this is
+/// the only thing that knows the address.
+pub const AUTHOR: &str = "IceWizard";
+pub const AUTHOR_URL: &str = "https://luise.ac";
+
+/// Open the author's site in the user's own browser.
+///
+/// The address is a constant, not an argument. A command that takes a URL and
+/// hands it to the shell opens whatever the page can be talked into asking for,
+/// and a credit line needs exactly one address — so there is no parameter to
+/// abuse and nothing to validate.
+///
+/// A process rather than a plugin: the app already runs ffmpeg this way, and
+/// one line of `open` is a smaller thing to carry than another dependency.
+/// Waited on rather than abandoned, like every other child here: these three
+/// launchers hand the URL over and return at once, so there is nothing to
+/// block on and no orphan left behind.
+#[tauri::command]
+fn open_author_site() -> Result<(), String> {
+    let (program, leading): (&str, &[&str]) = if cfg!(target_os = "macos") {
+        ("open", &[])
+    } else if cfg!(target_os = "windows") {
+        // `start` is a shell builtin, and its first quoted argument is taken as
+        // the window title rather than the thing to open — hence the empty one.
+        ("cmd", &["/C", "start", ""])
+    } else {
+        ("xdg-open", &[])
+    };
+
+    let status = std::process::Command::new(program)
+        .args(leading)
+        .arg(AUTHOR_URL)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .map_err(|e| format!("could not open {AUTHOR_URL}: {e}"))?;
+
+    if status.success() {
+        Ok(())
+    } else {
+        Err(format!("could not open {AUTHOR_URL} ({status})"))
+    }
+}
+
 /// Why the conversion stopped, if it did.
 ///
 /// A `<video>` reports a failure with no reason attached — it does not have
@@ -477,7 +522,8 @@ pub fn run() -> tauri::Result<()> {
             subtitle_url,
             fallback_url,
             stop_playback,
-            playback_failure
+            playback_failure,
+            open_author_site
         ])
         .build(tauri::generate_context!())?
         .run(|app, event| {

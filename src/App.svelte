@@ -4,7 +4,13 @@
   import Detail from "./lib/Detail.svelte";
   import Player from "./lib/Player.svelte";
   import Icon from "./lib/Icon.svelte";
-  import { getContent, getLibrary, getPlaybackSource, stopStream } from "./lib/api.js";
+  import {
+    getContent,
+    getLibrary,
+    getPlaybackSource,
+    openAuthorSite,
+    stopStream,
+  } from "./lib/api.js";
 
   let library = $state(null);
   let detail = $state(null);
@@ -162,6 +168,19 @@
   <Home {library} onopen={open} onreload={loadLibrary} focusId={cameFrom} {pending} bind:query />
 {/if}
 
+{#if !playing}
+  <!-- Every screen but the film. It belongs on the empty ones as much as on a
+       full library — a stick that has not been set up yet is exactly when
+       somebody wonders what this is and who wrote it — and it has no business
+       over a picture. -->
+  <footer>
+    Made by
+    <button onclick={() => openAuthorSite().catch(() => {})}>IceWizard</button>
+    <span aria-hidden="true">·</span>
+    <span class="site">luise.ac</span>
+  </footer>
+{/if}
+
 {#if error && library && !playing}
   <!-- Over the page rather than above it: an error that reflows the grid moves
        the tile the user was about to click. -->
@@ -271,6 +290,40 @@
   .toast button:hover {
     background: var(--ink-hi);
     color: var(--text);
+  }
+
+  /* In the flow, not fixed: pinned to the window it would sit over the last row
+     of posters for the whole length of the library. */
+  footer {
+    display: flex;
+    align-items: baseline;
+    justify-content: center;
+    gap: var(--space-sm);
+    padding: var(--space-3xl) var(--gutter) var(--space-2xl);
+    font-size: var(--t-meta);
+    color: var(--text-3);
+  }
+
+  footer button {
+    padding: 0;
+    font-weight: 600;
+    color: var(--text-2);
+    text-decoration: underline;
+    text-underline-offset: 3px;
+    text-decoration-color: var(--line-strong);
+    transition: color var(--dur-fast) var(--ease-out);
+  }
+
+  footer button:hover {
+    color: var(--on);
+    text-decoration-color: currentColor;
+  }
+
+  /* Shown as well as linked. The app is built for machines with no network, so
+     the browser may not open — and an address you can read is one you can type
+     somewhere else. */
+  .site {
+    font-variant-numeric: tabular-nums;
   }
 
   .welcome {

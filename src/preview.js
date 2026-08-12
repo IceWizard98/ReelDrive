@@ -187,6 +187,11 @@ window.__TAURI_INTERNALS__ = {
       // asks on every dead end and falls back to its own sentence.
       case "playback_failure":
         return null;
+      // The harness runs in a browser, where there is no shell to hand a URL
+      // to. Saying so beats a silent success the credit line would trust.
+      case "open_author_site":
+        window.open("https://luise.ac", "_blank", "noopener");
+        return null;
       default:
         throw `unknown command: ${command}`;
     }

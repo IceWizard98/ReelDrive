@@ -81,6 +81,11 @@ export const stopStream = () => invoke("stop_playback");
 /// say anything more useful than "it broke".
 export const playbackFailure = () => invoke("playback_failure");
 
+/// Open the author's site in the user's own browser. The address lives in the
+/// backend and is not a parameter: a command that takes a URL and hands it to
+/// the shell opens whatever it is asked to.
+export const openAuthorSite = () => invoke("open_author_site");
+
 /// Relative paths from the backend always use "/", so the media root is
 /// normalised to match before joining. Windows accepts forward slashes too.
 export function fileUrl(mediaRoot, relativePath) {
