@@ -173,18 +173,35 @@ two markers is placed by the first.
 **The title is whatever follows the marker**, trimmed of dashes and dots. A file
 that is only a marker has no title of its own and is listed as `Episode N`.
 
-**The season folder outranks a marker that disagrees with it.**
-`Season 4/Show S01E07.mkv` is season 4, episode 7: the folder is the thing you
-arranged by hand, and the episode number is the part the folder cannot say.
-Files loose in the content root have no folder to defer to, so their own markers
-place them — `S01E01.mkv` and `S03E01.mkv` side by side give seasons 1 and 3,
-with no season 2 invented to sit between them. Loose files with no season marker
-all land in season 1, because nothing in the name says otherwise.
-
 **Numbering falls back together, never halfway.** Markers are used only if every
 file in the season has one; a single file without sends the whole season to
 natural order (`ep2` before `ep10`), so two episodes can never claim the same
 number.
+
+### A series with no season folders
+
+Episodes loose in the content folder are placed by their own markers. **You do
+not need folders to get separate seasons** — the markers are enough, and no
+season is invented to fill a gap between them.
+
+| What the folder holds | What you get |
+| --- | --- |
+| `Show S01E01.mkv`<br>`Show S03E01.mkv` | **two seasons, 1 and 3.** No season 2, because nothing claims to be one |
+| `Show S01E01.mkv`<br>`Show S01E02.mkv` | one season, 1, with episodes 1 and 2 |
+| `E01.mkv`<br>`E02.mkv` | one season, 1 — the names give an episode but no season, and inventing more than one would be a guess |
+| `Show 1x01.mkv`<br>`Show 2x01.mkv` | two seasons, 1 and 2 |
+| `Show S01E01.mkv`<br>`Season 2/Show S02E01.mkv` | two seasons: the loose file makes season 1, the folder makes season 2 |
+| `Pilot.mkv`<br>`Finale.mkv` | one season, numbered by natural order |
+
+And when a folder and a file disagree, **the folder wins**:
+
+| Path | Season | Episode |
+| --- | --- | --- |
+| `Season 4/Show S01E07.mkv` | **4**, from the folder | **7**, from the file |
+
+The folder is the thing you arranged by hand, so it decides where the episode
+belongs. The episode number is the part the folder cannot say, so that still
+comes from the file.
 
 ### Subtitles and covers
 
