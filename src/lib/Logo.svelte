@@ -6,7 +6,11 @@
   // The trace lives in a tenth-scale, y-flipped space. Keeping that group and
   // moving the viewBox instead is what lets the path data stay byte-identical
   // to `.github/logo.svg`, so the two can never drift apart quietly.
-  let { size = 34 } = $props();
+  // Forty pixels is the floor: below it the sprocket holes stop reading as
+  // holes, the filmstrip turns to grain, and the mark stops being a picture of
+  // anything. A default under that hands the next caller the one size this
+  // artwork cannot survive.
+  let { size = 46 } = $props();
 </script>
 
 <svg

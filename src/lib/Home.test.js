@@ -92,13 +92,26 @@ describe("the type filter", () => {
   });
 
   it("narrows the search rather than replacing it", async () => {
-    // The two are not alternatives. Typing then filtering has to leave both
-    // applied, or the filter silently throws the query away.
-    home({}, { query: "e" });
+    // The two are not alternatives, and the fixture has to be able to tell
+    // which one got dropped: "u" keeps Scrubs and Dune and leaves Inception
+    // out, so an Inception on screen means the chip threw the query away and a
+    // Scrubs means the query threw the chip away.
+    home({}, { query: "u" });
     await fireEvent.click(chip("Movies"));
 
-    const shown = screen.queryAllByRole("button", { name: /^(Scrubs|Dune|Inception)/ });
-    expect(shown.map((b) => b.textContent.trim().split("\n")[0])).not.toContain("Scrubs");
+    expect(screen.getByText("Dune")).toBeInTheDocument();
+    expect(screen.queryByText("Inception")).toBeNull();
+    expect(screen.queryByText("Scrubs")).toBeNull();
+  });
+
+  it("names the kind in the empty state when a query emptied a filtered list", async () => {
+    // The query is what narrowed it, but the sentence still has to say which
+    // list was searched: "No titles match" over a lit Movies chip sends the
+    // user looking for a series that the chip is hiding on purpose.
+    home({}, { query: "scrubs" });
+    await fireEvent.click(chip("Movies"));
+
+    expect(screen.getByText(/No movies match “scrubs”/)).toBeInTheDocument();
   });
 
   it("says which of the two emptied the grid", async () => {
