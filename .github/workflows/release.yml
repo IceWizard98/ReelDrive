@@ -102,9 +102,12 @@ jobs:
         shell: bash
         working-directory: src-tauri
         run: |
-          cargo run --quiet --example build_number \
-            | grep -qx "build: $REELDRIVE_BUILD" \
-            || { echo "::error::the binary does not carry build $REELDRIVE_BUILD"; exit 1; }
+          # Not piped into `grep -q`: it leaves after the first line, the
+          # example dies of SIGPIPE on the second, and `pipefail` reads that as
+          # a failed check on a binary that was in fact right.
+          printed=$(cargo run --quiet --example build_number)
+          grep -qxF "build: $REELDRIVE_BUILD" <<<"$printed" \
+            || { echo "::error::the binary does not carry build $REELDRIVE_BUILD"; echo "$printed"; exit 1; }
 
       - name: Build macOS
         if: runner.os == 'macOS'

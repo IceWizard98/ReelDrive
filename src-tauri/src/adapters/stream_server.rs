@@ -917,6 +917,9 @@ mod tests {
         }
     }
 
+    // `hls_server` builds its fake ffmpeg out of a shell script, so it — and
+    // every test that reaches for it — only exists on unix.
+    #[cfg(unix)]
     #[test]
     fn a_chosen_audio_track_rules_out_handing_the_file_over() {
         // The untouched file carries every track and nothing downstream picks
