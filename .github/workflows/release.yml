@@ -206,4 +206,10 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ github.event.release.tag_name || inputs.tag }}
+        # bash, spelled out: without it Windows runs this under pwsh, where
+        # `$TAG` is an undefined PowerShell variable rather than the
+        # environment one — it expands to nothing and `gh` answers "release not
+        # found" for a release that is right there. Which is exactly what
+        # v0.1.0 did, twice, while the other three runners uploaded fine.
+        shell: bash
         run: gh release upload "$TAG" "${{ matrix.artifact }}" --clobber
