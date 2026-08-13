@@ -102,6 +102,13 @@ export const takeUp = (path, duration) => invoke("take_up", { path, duration });
 /// everything has been watched.
 export const getUpNext = (id) => invoke("up_next", { id });
 
+/// The episode that follows `path`, whatever has or has not been watched.
+/// A different question from `getUpNext`, which answers "where do I carry on"
+/// and can point behind you: after finishing episode two of a series whose
+/// first episode was never opened, the one to play is the third, not the first.
+/// `null` for a film, for the last episode, and from inside a special.
+export const getNextAfter = (id, path) => invoke("next_after", { id, path });
+
 /// Open the author's site in the user's own browser. The address lives in the
 /// backend and is not a parameter: a command that takes a URL and hands it to
 /// the shell opens whatever it is asked to.

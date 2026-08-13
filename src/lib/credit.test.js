@@ -15,6 +15,7 @@ vi.mock("./api.js", async (importOriginal) => ({
   openAuthorSite: vi.fn(),
   getProgress: vi.fn(),
   getUpNext: vi.fn(),
+  getNextAfter: vi.fn(),
   recordProgress: vi.fn(),
   takeUp: vi.fn(),
   // The player reaches for its own half of the bridge the moment it mounts,
@@ -68,6 +69,7 @@ beforeEach(() => {
   api.isFullscreen.mockResolvedValue(false);
   api.getProgress.mockResolvedValue({});
   api.getUpNext.mockResolvedValue(null);
+  api.getNextAfter.mockResolvedValue(null);
   api.recordProgress.mockResolvedValue(null);
   api.takeUp.mockResolvedValue(null);
 });

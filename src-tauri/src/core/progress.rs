@@ -9,7 +9,7 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
-use crate::core::model::{ContentBody, ContentDetail};
+use crate::core::model::{ContentBody, ContentDetail, Episode, Season};
 use crate::core::paths;
 
 /// Bumped by hand when the shape below changes, and only then.
@@ -255,30 +255,69 @@ pub fn up_next(detail: &ContentDetail, data: &ProgressData) -> Option<UpNext> {
             fresh: !data.items.contains_key(file),
         }),
         ContentBody::Series { seasons } => {
-            let mut ordered: Vec<_> = seasons.iter().collect();
-            ordered.sort_by_key(|season| season.number);
-            let only_extras = ordered.iter().all(|season| season.number == 0);
-
-            let fresh = !ordered
+            let running_order = running_order(seasons);
+            let fresh = !seasons
                 .iter()
                 .flat_map(|season| &season.episodes)
                 .any(|episode| data.items.contains_key(&episode.file));
 
-            ordered
-                .iter()
-                .filter(|season| only_extras || season.number != 0)
-                .flat_map(|season| season.episodes.iter().map(move |episode| (season, episode)))
+            running_order
+                .into_iter()
                 .find(|(_, episode)| !data.items.get(&episode.file).is_some_and(|m| m.done))
-                .map(|(season, episode)| UpNext {
-                    file: episode.file.clone(),
-                    subtitles: episode.subtitles.clone(),
-                    season: Some(season.number),
-                    episode: Some(episode.number),
-                    title: episode.title.clone(),
-                    seconds: data.resume_seconds(&episode.file),
-                    fresh,
-                })
+                .map(|(season, episode)| carry_on(season, episode, data, fresh))
         }
+    }
+}
+
+/// The one after `file`, whatever has or has not been watched.
+///
+/// A different question from `up_next`, and answering it with that one is how
+/// the end of an episode used to send a viewer backwards: watch episode two
+/// without ever opening episode one, finish it, and "the first not finished" is
+/// episode one. This is what the skip button and the end of a film both want;
+/// the play button on a title still wants `up_next`.
+///
+/// `None` when there is nothing after — a film, the last episode, a path this
+/// title does not hold, or a special, which is not a place in the running order
+/// to move on from.
+pub fn after(detail: &ContentDetail, file: &str, data: &ProgressData) -> Option<UpNext> {
+    let ContentBody::Series { seasons } = &detail.body else {
+        return None;
+    };
+    let running_order = running_order(seasons);
+    let here = running_order
+        .iter()
+        .position(|(_, episode)| episode.file == file)?;
+    let (season, episode) = running_order.get(here + 1)?;
+    Some(carry_on(season, episode, data, false))
+}
+
+/// Every episode of a series in the order someone would watch them.
+///
+/// Shared so that "what comes next" and "where do I carry on" cannot drift into
+/// disagreeing about where a season ends. Extras (season 0) are left out unless
+/// they are all there is: they are not where a series continues, and a stick
+/// with a `Specials` folder would otherwise never advance past it.
+fn running_order(seasons: &[Season]) -> Vec<(&Season, &Episode)> {
+    let mut ordered: Vec<_> = seasons.iter().collect();
+    ordered.sort_by_key(|season| season.number);
+    let only_extras = ordered.iter().all(|season| season.number == 0);
+    ordered
+        .into_iter()
+        .filter(|season| only_extras || season.number != 0)
+        .flat_map(|season| season.episodes.iter().map(move |episode| (season, episode)))
+        .collect()
+}
+
+fn carry_on(season: &Season, episode: &Episode, data: &ProgressData, fresh: bool) -> UpNext {
+    UpNext {
+        file: episode.file.clone(),
+        subtitles: episode.subtitles.clone(),
+        season: Some(season.number),
+        episode: Some(episode.number),
+        title: episode.title.clone(),
+        seconds: data.resume_seconds(&episode.file),
+        fresh,
     }
 }
 
@@ -783,6 +822,121 @@ mod tests {
         assert_eq!(
             up_next(&detail, &data()).unwrap().file,
             "Scrubs/Specials/x.mkv"
+        );
+    }
+
+    #[test]
+    fn the_episode_after_this_one_is_not_the_first_one_unwatched() {
+        // The two questions the app asks are different, and answering the
+        // second with the first is how the end of an episode sent the viewer
+        // backwards: watch episode two without ever opening episode one, finish
+        // it, and "the first not finished" is episode one.
+        let detail = series(vec![season(1, &["Scrubs/S01/e1.mkv", "Scrubs/S01/e2.mkv"])]);
+        let mut data = data();
+        data.record("Scrubs/S01/e2.mkv", 1290.0, 1300.0, NOW)
+            .unwrap();
+
+        assert_eq!(up_next(&detail, &data).unwrap().file, "Scrubs/S01/e1.mkv");
+        assert_eq!(
+            after(&detail, "Scrubs/S01/e1.mkv", &data).unwrap().file,
+            "Scrubs/S01/e2.mkv"
+        );
+    }
+
+    #[test]
+    fn a_series_whose_only_watched_file_is_a_special_is_not_untouched() {
+        // `fresh` is asked of every season, extras included, while the episode
+        // to carry on with is picked from the running order, which leaves them
+        // out. Two different questions over two different lists, and pulling
+        // the walk out into `running_order` is exactly the change that could
+        // have quietly put both onto the filtered one: a viewer who has watched
+        // a special would then be offered "Play" as if they had never opened
+        // the title.
+        let detail = series(vec![
+            season(0, &["Scrubs/Specials/x.mkv"]),
+            season(1, &["Scrubs/S01/e1.mkv"]),
+        ]);
+        let mut data = data();
+        data.record("Scrubs/Specials/x.mkv", 400.0, 1300.0, NOW)
+            .unwrap();
+
+        let next = up_next(&detail, &data).unwrap();
+        assert_eq!(next.file, "Scrubs/S01/e1.mkv");
+        assert!(!next.fresh);
+    }
+
+    #[test]
+    fn what_follows_the_last_episode_of_a_season_is_the_next_season() {
+        // The same one-list walk `up_next` uses, so the two can never disagree
+        // about where a season ends.
+        let detail = series(vec![
+            season(1, &["Scrubs/S01/e1.mkv", "Scrubs/S01/e2.mkv"]),
+            season(2, &["Scrubs/S02/e1.mkv"]),
+        ]);
+        let next = after(&detail, "Scrubs/S01/e2.mkv", &data()).unwrap();
+        assert_eq!(next.file, "Scrubs/S02/e1.mkv");
+        assert_eq!(next.season, Some(2));
+        assert_eq!(next.episode, Some(1));
+    }
+
+    #[test]
+    fn nothing_follows_the_last_episode_there_is() {
+        let detail = series(vec![season(1, &["Scrubs/S01/e1.mkv"])]);
+        assert_eq!(after(&detail, "Scrubs/S01/e1.mkv", &data()), None);
+    }
+
+    #[test]
+    fn nothing_follows_a_film() {
+        let detail = movie("Inception (2010)/Inception.mkv");
+        assert_eq!(
+            after(&detail, "Inception (2010)/Inception.mkv", &data()),
+            None
+        );
+    }
+
+    #[test]
+    fn nothing_follows_a_file_this_title_does_not_hold() {
+        // A stale path from a folder renamed mid-session. Answering with the
+        // first episode would restart the series under the viewer.
+        let detail = series(vec![season(1, &["Scrubs/S01/e1.mkv", "Scrubs/S01/e2.mkv"])]);
+        assert_eq!(after(&detail, "Scrubs/S01/gone.mkv", &data()), None);
+    }
+
+    #[test]
+    fn nothing_follows_an_extra_even_when_the_series_goes_on() {
+        // Specials are not a place in the running order, so there is no next
+        // from inside one — and skipping from a special into episode one would
+        // be a place the viewer never asked to be.
+        let detail = series(vec![
+            season(0, &["Scrubs/Specials/x.mkv"]),
+            season(1, &["Scrubs/S01/e1.mkv"]),
+        ]);
+        assert_eq!(after(&detail, "Scrubs/Specials/x.mkv", &data()), None);
+    }
+
+    #[test]
+    fn skipping_into_a_part_watched_episode_carries_on_from_where_it_stopped() {
+        let detail = series(vec![season(1, &["Scrubs/S01/e1.mkv", "Scrubs/S01/e2.mkv"])]);
+        let mut data = data();
+        data.record("Scrubs/S01/e2.mkv", 400.0, 1300.0, NOW)
+            .unwrap();
+        assert_eq!(
+            after(&detail, "Scrubs/S01/e1.mkv", &data).unwrap().seconds,
+            400.0
+        );
+    }
+
+    #[test]
+    fn what_follows_does_not_care_whether_anything_has_been_watched() {
+        // Unlike `up_next`, which is entirely about that. The order on disk is
+        // the only thing that decides what comes next.
+        let detail = series(vec![season(1, &["Scrubs/S01/e1.mkv", "Scrubs/S01/e2.mkv"])]);
+        let mut data = data();
+        data.record("Scrubs/S01/e2.mkv", 1290.0, 1300.0, NOW)
+            .unwrap();
+        assert_eq!(
+            after(&detail, "Scrubs/S01/e1.mkv", &data).unwrap().file,
+            "Scrubs/S01/e2.mkv"
         );
     }
 

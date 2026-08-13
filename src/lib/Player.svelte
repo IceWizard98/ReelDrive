@@ -40,6 +40,15 @@
     // Separate from `onexit` because only one of the two can lead into the next
     // episode.
     onfinished = null,
+    // Move on to whatever follows this file. Null when nothing does — a film,
+    // or the last episode there is — and the button is then not drawn at all
+    // rather than drawn dead: a disabled control on every film is permanent
+    // noise for a case that is not coming back.
+    //
+    // The player is told *that* there is a next, never what it is: which file
+    // follows which is a question about seasons on a stick, and this component
+    // has no business knowing what a season is.
+    onnext = null,
   } = $props();
 
   let video = $state(null);
@@ -150,7 +159,8 @@
   // Nine shortcuts nobody could find out about. `?` is where every player of
   // this kind keeps its list, and Escape closes it like any other overlay.
   let shortcuts = $state(false);
-  const SHORTCUTS = [
+  const NEXT_KEY = "N";
+  const ALL_SHORTCUTS = [
     ["Space  ·  K", "Play or pause"],
     ["← →", "5 seconds"],
     ["J  ·  L", "10 seconds"],
@@ -158,8 +168,15 @@
     ["M", "Mute"],
     ["C", "Subtitles"],
     ["F", "Full screen"],
+    [NEXT_KEY, "Next episode"],
     ["Esc", "Back to library"],
   ];
+  // Derived, not constant: the list is the only place the shortcuts are
+  // written down, so a film — which has no next episode — must not be told
+  // about a key that does nothing when pressed. Declared after the list it
+  // filters, because a `$derived` reading a `const` above it only works while
+  // nothing in this script reads it during setup.
+  const SHORTCUTS = $derived(ALL_SHORTCUTS.filter(([key]) => key !== NEXT_KEY || onnext));
 
   // Whether the wait has gone on long enough to be worth naming. The delay is
   // the decision — a word that flashes up for 200ms between two frames of a
@@ -710,6 +727,11 @@
       l: () => nudge(10),
       c: toggleSubtitles,
       f: toggleFullscreen,
+      // Null on a film, which falls through the `if (handler)` below exactly as
+      // an absent key would — so the browser keeps the press rather than having
+      // it swallowed and prevented. Keyed off the same constant the shortcut
+      // list prints, so the two cannot be renamed apart.
+      [NEXT_KEY.toLowerCase()]: onnext,
       "?": () => (shortcuts = !shortcuts),
     };
     const handler = keys[event.key];
@@ -900,6 +922,14 @@
       aria-label="Keyboard shortcuts"
       aria-expanded={shortcuts}>?</button
     >
+    <!-- Only when there is something to skip to. Drawn here rather than beside
+         the transport at the bottom because it leaves the film rather than
+         moving inside it, which is what the rest of this bar is for. -->
+    {#if onnext}
+      <button class="icon" onclick={onnext} aria-label="Next episode">
+        <Icon name="next" size={20} />
+      </button>
+    {/if}
     {#if delivery !== "direct"}<span class="mode">{MODE[delivery] ?? delivery}</span>{/if}
   </div>
 

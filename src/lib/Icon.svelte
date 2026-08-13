@@ -63,6 +63,15 @@
     <path d="M19 12H5M11 6l-6 6 6 6" />
   {:else if name === "check"}
     <path d="M4.5 12.5 9.5 17.5 19.5 6.5" />
+  {:else if name === "next"}
+    <!-- The skip-forward every player uses: a triangle running into a bar.
+         Filled, unlike the strokes above, because at this size an outlined
+         triangle reads as a chevron and the two mean different things. -->
+    <!-- 1.6 like the play triangle, and for its reason: a stroke around a fill
+         adds to the shape, so the root's 1.9 draws this heavier than the play
+         button it sits above. -->
+    <path d="M5 5.5 14.5 12 5 18.5Z" fill="currentColor" stroke-width="1.6" />
+    <path d="M18 5.5v13" />
   {/if}
 </svg>
 

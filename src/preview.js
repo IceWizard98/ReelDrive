@@ -206,6 +206,39 @@ function record(path, seconds, duration) {
   return mark;
 }
 
+/// Every episode of a series in the order someone would watch them. The
+/// backend's `running_order`, shared by both questions below for the same
+/// reason it is shared there.
+function runningOrder(seasons) {
+  const ordered = [...seasons].sort((a, b) => a.number - b.number);
+  const onlyExtras = ordered.every((season) => season.number === 0);
+  return ordered
+    .filter((season) => onlyExtras || season.number !== 0)
+    .flatMap((season) => (season.episodes ?? []).map((episode) => ({ season, episode })));
+}
+
+/// The one after `path`, whatever has or has not been watched. The backend's
+/// `after`. Null from inside a special, which is not a place in the running
+/// order to move on from.
+function nextAfter(id, path) {
+  const detail = DETAILS[id];
+  if (!detail || detail.body.kind !== "series") return null;
+  const order = runningOrder(detail.body.seasons);
+  const here = order.findIndex(({ episode }) => episode.file === path);
+  if (here === -1 || here + 1 >= order.length) return null;
+  const { season, episode } = order[here + 1];
+  const mark = HISTORY[episode.file];
+  return {
+    file: episode.file,
+    subtitles: episode.subtitles ?? [],
+    season: season.number,
+    episode: episode.number,
+    title: episode.title,
+    seconds: mark && !mark.done ? mark.seconds : 0,
+    fresh: false,
+  };
+}
+
 /// The first episode not finished, seasons in order — extras last, and skipped
 /// unless they are all there is.
 function upNext(id) {
@@ -317,6 +350,8 @@ window.__TAURI_INTERNALS__ = {
         return HISTORY[args.path];
       case "up_next":
         return upNext(args.id);
+      case "next_after":
+        return nextAfter(args.id, args.path);
       // The harness runs in a browser, where there is no shell to hand a URL
       // to, so the nearest thing is a tab. A blocked popup comes back as null,
       // and reporting that is the only way the harness ever shows the footer's

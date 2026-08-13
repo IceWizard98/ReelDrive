@@ -573,6 +573,23 @@ fn up_next(id: String, state: State<'_, AppState>) -> Result<Option<UpNext>, Str
     Ok(watched::up_next(&detail, &state.history()))
 }
 
+/// The episode that follows `path`, whatever has or has not been watched.
+///
+/// Not the same question as `up_next`, and the difference is the point: that
+/// one answers "where do I carry on with this series", which can be behind you,
+/// while this one answers "what comes after this", which is what the skip
+/// button and the end of an episode both mean.
+#[tauri::command]
+fn next_after(
+    id: String,
+    path: String,
+    state: State<'_, AppState>,
+) -> Result<Option<UpNext>, String> {
+    let root = media_root()?;
+    let detail = scanner::scan_content(&StdFs, &root, &id).map_err(|e| e.to_string())?;
+    Ok(watched::after(&detail, &path, &state.history()))
+}
+
 /// Why the conversion stopped, if it did.
 ///
 /// A `<video>` reports a failure with no reason attached — it does not have
@@ -680,7 +697,8 @@ pub fn run() -> tauri::Result<()> {
             progress,
             record_progress,
             take_up,
-            up_next
+            up_next,
+            next_after
         ])
         .build(tauri::generate_context!())?
         .run(|app, event| {

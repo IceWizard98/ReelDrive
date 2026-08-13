@@ -14,6 +14,7 @@ vi.mock("./api.js", async (importOriginal) => ({
   openAuthorSite: vi.fn(),
   getProgress: vi.fn(),
   getUpNext: vi.fn(),
+  getNextAfter: vi.fn(),
   recordProgress: vi.fn(),
   takeUp: vi.fn(),
   audioUrl: vi.fn(),
@@ -93,6 +94,7 @@ beforeEach(() => {
   api.getPlaybackSource.mockResolvedValue(source());
   api.getProgress.mockResolvedValue({});
   api.getUpNext.mockResolvedValue(upNext());
+  api.getNextAfter.mockResolvedValue(null);
   api.recordProgress.mockResolvedValue(null);
   api.takeUp.mockResolvedValue(null);
   api.playbackFailure.mockResolvedValue(null);
@@ -156,11 +158,13 @@ describe("picking a series back up", () => {
 
 describe("the end of an episode", () => {
   it("marks it watched and starts the next one by itself", async () => {
-    const { video } = await watch();
     api.recordProgress.mockResolvedValue(mark(0, 1300, true));
-    api.getUpNext.mockResolvedValue(
+    // Asked once, as the episode starts: what follows a file is a question
+    // about the order on disk, and that does not change while it plays.
+    api.getNextAfter.mockResolvedValue(
       upNext({ file: EPISODE_2.file, episode: 2, seconds: 0, fresh: false }),
     );
+    const { video } = await watch();
 
     await fireEvent.ended(video);
 
@@ -177,8 +181,8 @@ describe("the end of an episode", () => {
     // that name it is a full-length position on an episode nobody has seen —
     // which marks it watched and skips it, and then the one after it, all the
     // way to the end of the series in a few seconds.
+    api.getNextAfter.mockResolvedValue(upNext({ file: EPISODE_2.file, episode: 2, fresh: false }));
     const { video } = await watch();
-    api.getUpNext.mockResolvedValue(upNext({ file: EPISODE_2.file, episode: 2, fresh: false }));
 
     // Watched to the end, which is the only way this happens: the parting
     // report exists precisely because the film had got somewhere.
@@ -194,8 +198,8 @@ describe("the end of an episode", () => {
   it("dates the episode it moves to, so the series stays in continue watching", async () => {
     // For the first fifteen seconds of an episode nothing about it is worth
     // recording, and the only other thing to show is the one just finished.
+    api.getNextAfter.mockResolvedValue(upNext({ file: EPISODE_2.file, episode: 2, fresh: false }));
     const { video } = await watch();
-    api.getUpNext.mockResolvedValue(upNext({ file: EPISODE_2.file, episode: 2, fresh: false }));
 
     await fireEvent.ended(video);
 
@@ -204,7 +208,7 @@ describe("the end of an episode", () => {
 
   it("goes back to the library after the last episode of the last season", async () => {
     const { video } = await watch();
-    api.getUpNext.mockResolvedValue(null);
+    api.getNextAfter.mockResolvedValue(null);
 
     await fireEvent.ended(video);
 
@@ -218,7 +222,7 @@ describe("the end of an episode", () => {
     // nothing could be recorded about it. Starting it again is an endless loop.
     const { video } = await watch();
     api.getPlaybackSource.mockClear();
-    api.getUpNext.mockResolvedValue(upNext({ file: EPISODE_1.file, fresh: false }));
+    api.getNextAfter.mockResolvedValue(upNext({ file: EPISODE_1.file, fresh: false }));
 
     await fireEvent.ended(video);
 
@@ -230,7 +234,7 @@ describe("the end of an episode", () => {
     // A folder that moved, or a stick pulled between two episodes. The film
     // that just ended, ended; that is not an error box over the library.
     const { video } = await watch();
-    api.getUpNext.mockRejectedValue(new Error("scan failed"));
+    api.getNextAfter.mockRejectedValue(new Error("scan failed"));
 
     await fireEvent.ended(video);
 
@@ -300,7 +304,7 @@ describe("leaving the player while it works out what comes next", () => {
     const { video } = await watch();
     api.getPlaybackSource.mockClear();
     let releaseScan;
-    api.getUpNext.mockReturnValue(new Promise((resolve) => (releaseScan = resolve)));
+    api.getNextAfter.mockReturnValue(new Promise((resolve) => (releaseScan = resolve)));
 
     await fireEvent.ended(video);
     await fireEvent.keyDown(window, { key: "Escape" });
@@ -311,5 +315,149 @@ describe("leaving the player while it works out what comes next", () => {
 
     expect(api.getPlaybackSource).not.toHaveBeenCalled();
     expect(document.querySelector("video")).toBeNull();
+  });
+});
+
+describe("the skip button", () => {
+  const following = (overrides = {}) =>
+    upNext({ file: EPISODE_2.file, episode: 2, fresh: false, ...overrides });
+
+  it("is not offered when nothing follows what is playing", async () => {
+    // A film, or the last episode there is. A dead control on every film is
+    // permanent noise for a case that is not coming back.
+    api.getNextAfter.mockResolvedValue(null);
+    await watch();
+    expect(screen.queryByRole("button", { name: "Next episode" })).toBeNull();
+  });
+
+  it("appears once the backend says what comes next", async () => {
+    api.getNextAfter.mockResolvedValue(following());
+    await watch();
+    expect(await screen.findByRole("button", { name: "Next episode" })).toBeInTheDocument();
+  });
+
+  it("plays the following episode from where that one was left", async () => {
+    // Skipping into an episode already part watched carries on with it rather
+    // than restarting it, so the position has to survive the handover — not
+    // just the file name.
+    api.getNextAfter.mockResolvedValue(following({ seconds: 400 }));
+    const { container } = await watch();
+
+    await fireEvent.click(await screen.findByRole("button", { name: "Next episode" }));
+    await waitFor(() => expect(api.getPlaybackSource).toHaveBeenCalledWith(EPISODE_2.file, []));
+
+    const video = await waitFor(() => {
+      const found = container.querySelector("video");
+      if (!found) throw new Error("no player yet");
+      return found;
+    });
+    let seekedTo = 0;
+    Object.defineProperty(video, "currentTime", {
+      configurable: true,
+      get: () => seekedTo,
+      set: (value) => (seekedTo = value),
+    });
+    await fireEvent.loadedMetadata(video);
+
+    expect(seekedTo).toBe(400);
+  });
+
+  it("leaves the episode being skipped exactly where it was", async () => {
+    // Skipping is deciding not to watch something, not having watched it: the
+    // position stays so the viewer can come back to it. Marking it done here
+    // would quietly throw away where they were.
+    api.getNextAfter.mockResolvedValue(following());
+    const { video } = await watch();
+    await fireEvent.play(video);
+    await at(video, 300);
+    await waitFor(() => expect(api.recordProgress).toHaveBeenCalled());
+    api.recordProgress.mockClear();
+
+    await fireEvent.click(await screen.findByRole("button", { name: "Next episode" }));
+    await waitFor(() => expect(api.getPlaybackSource).toHaveBeenCalledWith(EPISODE_2.file, []));
+
+    const asWatched = api.recordProgress.mock.calls.filter(
+      ([path, seconds, duration]) => path === EPISODE_1.file && seconds >= duration,
+    );
+    expect(asWatched).toEqual([]);
+  });
+
+  it("survives a second press while the first is still opening the file", async () => {
+    // Key repeat on a held N, or an ordinary double click. The second press
+    // finds `startPlayback` already busy and gets a null back from it — which
+    // is also what a failed probe looks like, so both presses together used to
+    // land in the library instead of the next episode.
+    api.getNextAfter.mockResolvedValue(following());
+    const { container } = await watch();
+    await screen.findByRole("button", { name: "Next episode" });
+
+    let openIt;
+    api.getPlaybackSource.mockReturnValue(new Promise((resolve) => (openIt = resolve)));
+
+    await fireEvent.keyDown(window, { key: "n" });
+    await fireEvent.keyDown(window, { key: "n" });
+    openIt(source());
+
+    await waitFor(() => expect(api.getPlaybackSource).toHaveBeenCalledWith(EPISODE_2.file, []));
+    // Settled, not merely reached: the losing press takes the player down a
+    // turn *after* the winning one has put it up, so polling for a video would
+    // catch the one that is about to be removed.
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(container.querySelector("video")).not.toBeNull();
+  });
+
+  it("answers to N as well as to the pointer", async () => {
+    api.getNextAfter.mockResolvedValue(following());
+    await watch();
+    await screen.findByRole("button", { name: "Next episode" });
+
+    await fireEvent.keyDown(window, { key: "n" });
+
+    await waitFor(() => expect(api.getPlaybackSource).toHaveBeenCalledWith(EPISODE_2.file, []));
+  });
+
+  it("lets N through to the browser on something with no next", async () => {
+    // The key is registered with a null handler rather than left out, so this
+    // pins that the null falls through: nothing is played, and the press is
+    // neither swallowed nor prevented, which on a film is what a shortcut this
+    // player does not own has to do.
+    api.getNextAfter.mockResolvedValue(null);
+    const { container } = await watch();
+    api.getPlaybackSource.mockClear();
+
+    const press = new KeyboardEvent("keydown", { key: "n", cancelable: true, bubbles: true });
+    window.dispatchEvent(press);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+
+    expect(api.getPlaybackSource).not.toHaveBeenCalled();
+    expect(press.defaultPrevented).toBe(false);
+    expect(container.querySelector("video")).not.toBeNull();
+  });
+
+  it("says nothing about N on something with no next", async () => {
+    // The shortcut list is the only place the keys are written down, so it
+    // must not advertise one that does nothing when pressed.
+    api.getNextAfter.mockResolvedValue(null);
+    await watch();
+    await fireEvent.keyDown(window, { key: "?" });
+
+    expect(screen.queryByText("Next episode")).toBeNull();
+  });
+});
+
+describe("what the end of an episode counts as next", () => {
+  it("is the one after it, not the first one left unwatched", async () => {
+    // The bug this replaced: watch episode two without ever opening episode
+    // one, finish it, and "the first not finished" is episode one — so the
+    // evening ran backwards.
+    api.getNextAfter.mockResolvedValue(
+      upNext({ file: EPISODE_S2.file, season: 2, episode: 1, fresh: false }),
+    );
+    const { video } = await watch();
+
+    await fireEvent.ended(video);
+
+    await waitFor(() => expect(api.getPlaybackSource).toHaveBeenCalledWith(EPISODE_S2.file, []));
+    expect(api.getNextAfter).toHaveBeenCalledWith("Scrubs", EPISODE_1.file);
   });
 });

@@ -9,6 +9,7 @@
     getLibrary,
     getPlaybackSource,
     getProgress,
+    getNextAfter,
     getUpNext,
     openAuthorSite,
     recordProgress,
@@ -50,6 +51,9 @@
   // from the seasons and the history together. Refetched rather than derived
   // here so the rule for it exists once, in one language.
   let upNext = $state(null);
+  // What follows the file that is playing, if anything does. Held here rather
+  // than in the player, which has no idea what a season is.
+  let comingNext = $state(null);
   // Which visit to the player is in progress. Bumped by every exit, so work
   // still on its way from one episode to the next can tell that the viewer has
   // left in the meantime. Not `$state`: nothing on screen reads it.
@@ -106,6 +110,21 @@
       // always at hand — and it has to be caught here, because `detail` may be
       // gone by the time the film ends.
       playing = { source, relativePath, startAt, contentId };
+      // What follows this file, asked once and used by both the skip button and
+      // the end of the film. It is a question about the order on disk, not about
+      // what has been watched, so it does not go stale while the episode plays.
+      //
+      // Not awaited: it costs a deep scan of a folder on a stick, and the
+      // picture must not wait behind it. The answer is dropped if the viewer has
+      // moved on by the time it lands.
+      comingNext = null;
+      if (contentId) {
+        getNextAfter(contentId, relativePath)
+          .then((next) => {
+            if (playing?.relativePath === relativePath) comingNext = next;
+          })
+          .catch((e) => console.warn("what follows this could not be read", e));
+      }
       return source;
     } catch (e) {
       error = String(e);
@@ -115,36 +134,54 @@
     }
   }
 
-  /// The film ended by itself. Mark it watched and, if there is one, play the
-  /// next episode — across the end of a season, which is where a series is
-  /// most likely to be abandoned for want of one press.
-  async function finished() {
+  // Whether a move is already under way. Not `$state`: nothing on screen reads
+  // it.
+  let advancing = false;
+
+  /// Move on to whatever follows what is playing.
+  ///
+  /// `markWatched` is the whole difference between the two ways here. Reaching
+  /// the end of an episode means you have seen it; pressing skip means you have
+  /// decided not to, and the position you were at stays where it was so you can
+  /// come back to it. The position itself is saved either way, by the player's
+  /// own parting report as it is unmounted.
+  ///
+  /// One move at a time. A second one while the first is still probing finds
+  /// `startPlayback` busy and gets a null back from it — which is also what a
+  /// failed probe looks like, so it would take the player down: key repeat on a
+  /// held N, or an ordinary double click, landed in the library instead of the
+  /// next episode.
+  async function advance({ markWatched }) {
+    if (advancing) return;
+    advancing = true;
+    try {
+      await move({ markWatched });
+    } finally {
+      advancing = false;
+    }
+  }
+
+  async function move({ markWatched }) {
     const { relativePath, contentId, source } = playing;
-    // Which player this is about. Working out what comes next is a deep scan of
-    // a folder on a stick, and the probe after it is a process launch: there
+    const next = comingNext;
+    // Which player this is about. The probe below is a process launch, so there
     // are seconds in here, and Escape during them has to keep meaning Escape
     // rather than being answered by a player that reopens itself.
     const from = watching;
     const left = () => from !== watching;
 
-    const length = source.duration ?? 0;
-    await keepPosition(relativePath, length, length);
-
-    let next = null;
-    try {
-      if (contentId) next = await getUpNext(contentId);
-    } catch (e) {
-      // Nothing to carry on with is not an error worth a box over the library:
-      // the film that just ended, ended.
-      console.warn("next episode not found", e);
+    if (markWatched) {
+      const length = source.duration ?? 0;
+      await keepPosition(relativePath, length, length);
     }
 
     // Already gone, and the exit they made did the stopping.
     if (left()) return;
 
-    // The same file again means the backend does not consider it finished —
-    // a film whose length could not be probed, so nothing could be recorded.
-    // Starting it over would be an endless loop, which is worse than stopping.
+    // The same file again would be an endless loop, which is worse than
+    // stopping. It should be impossible — what follows a file is never that
+    // file — but this is the one place where being wrong costs the viewer a
+    // player that restarts for ever.
     if (!next || next.file === relativePath) return stopPlayback();
 
     const started = await startPlayback(next.file, next.subtitles, next.seconds, contentId);
@@ -162,6 +199,14 @@
     }
   }
 
+  /// The film ended by itself: it has been watched, and the next one follows.
+  const finished = () => advance({ markWatched: true });
+
+  /// The viewer pressed skip. Same move, but the episode being left keeps the
+  /// position it had — skipping is deciding not to watch something, not having
+  /// watched it.
+  const skip = () => advance({ markWatched: false });
+
   // Every way out of the player comes through here. Unmounting it stops the
   // hls.js side, but the ffmpeg feeding it belongs to the backend and keeps
   // converting the rest of the film into temp until something says otherwise.
@@ -169,6 +214,7 @@
   // window, ends it anyway.
   function stopPlayback() {
     playing = null;
+    comingNext = null;
     // Counted, not merely cleared: the end of an episode leads into the start
     // of the next one through several awaits, and the only way that chain can
     // tell it has been abandoned is that this happened while it was waiting.
@@ -282,6 +328,7 @@
       startAt={playing.startAt}
       onexit={stopPlayback}
       onfinished={finished}
+      onnext={comingNext ? skip : null}
       onposition={keepPosition}
     />
   {/key}

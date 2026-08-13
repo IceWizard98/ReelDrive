@@ -17,7 +17,7 @@ filesystem and works out on its own what is a film and what is a series.
 [![Tauri](https://img.shields.io/badge/Tauri-2-24C8DB?logo=tauri&logoColor=white)](https://tauri.app)
 [![Svelte](https://img.shields.io/badge/Svelte-5-FF3E00?logo=svelte&logoColor=white)](https://svelte.dev)
 [![Rust](https://img.shields.io/badge/Rust-1.85-000000?logo=rust&logoColor=white)](https://www.rust-lang.org)
-[![Tests](https://img.shields.io/badge/tests-286%20Rust%20%C2%B7%20141%20frontend-2ea043)](#development)
+[![Tests](https://img.shields.io/badge/tests-295%20Rust%20%C2%B7%20150%20frontend-2ea043)](#development)
 [![License](https://img.shields.io/badge/license-MIT-1f2430)](LICENSE)
 
 <img src=".github/screenshots/library.png" alt="The library screen: a grid of posters grouped into series and movies" width="900">
@@ -290,6 +290,7 @@ codec the first one is not.
 | `M` | mute |
 | `C` | subtitles |
 | `F` | full screen |
+| `N` | next episode — only when there is one, so never on a film |
 | `?` | the list of these |
 | `Esc` | leave full screen, then leave the film |
 
@@ -302,7 +303,7 @@ by position — `Home` and `End` reach the ends.
 npm install
 REELDRIVE_MEDIA=/path/to/media npm run tauri dev
 
-just test      # or: make test    — 286 Rust, 141 frontend
+just test      # or: make test    — 295 Rust, 150 frontend
 just check     # or: make check   — tests, clippy, formatting, frontend build
 ```
 
@@ -436,6 +437,15 @@ The two allowances meet at forty minutes, where 5% of the running time is
 exactly the two minutes, which is why anything longer behaves exactly as a flat
 95% always did. Below ten minutes the four-fifths floor is what applies, because
 two minutes of credits is more than a fifth of the film.
+
+**"Where do I carry on" and "what comes after this" are two questions**, and the
+app asks them in different places. The **Resume** button on a title asks the
+first: the earliest episode not finished, which may be one you skipped past. The
+skip button in the player, and the end of an episode, ask the second: the one
+that follows this file in the running order, watched or not. Answering the
+second with the first is how an evening could run backwards — finish episode
+two of a series whose first episode you never opened, and "the earliest not
+finished" is episode one.
 
 **Nothing remembers which episode you are on.** It is worked out each time from
 the folders and the history together, so renaming a folder or dropping in the
