@@ -72,18 +72,29 @@ pub fn resolve_media_path(media_root: &Path, relative: &str) -> Result<PathBuf, 
     if relative.trim().is_empty() {
         return Err(PathError::Empty);
     }
+    if !is_safe_relative(relative) {
+        return Err(PathError::Escapes(relative.to_string()));
+    }
 
-    let candidate = Path::new(relative);
-    let has_unsafe_component = candidate
+    Ok(media_root.join(Path::new(relative)))
+}
+
+/// Whether a path could only ever mean a file below the media root.
+///
+/// The syntactic half of `resolve_media_path`, split out because the watch
+/// history keys its marks by these paths and has to reject the same strings
+/// without a root to resolve them against. Two copies of this rule would be two
+/// chances to disagree, and the disagreement would be a hole.
+pub fn is_safe_relative(relative: &str) -> bool {
+    if relative.trim().is_empty() {
+        return false;
+    }
+    let has_unsafe_component = Path::new(relative)
         .components()
         .any(|component| !matches!(component, Component::Normal(_)));
     // Windows accepts both separators, so a backslash could smuggle a `..`
     // past a `/`-only check.
-    if has_unsafe_component || relative.contains('\\') || relative.contains('\0') {
-        return Err(PathError::Escapes(relative.to_string()));
-    }
-
-    Ok(media_root.join(candidate))
+    !has_unsafe_component && !relative.contains('\\') && !relative.contains('\0')
 }
 
 #[cfg(test)]

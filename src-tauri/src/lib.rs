@@ -3,24 +3,94 @@ pub mod core;
 pub mod defaults;
 pub mod ports;
 
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use serde::Serialize;
 use tauri::{Manager, State};
 
 use crate::adapters::ffmpeg;
 use crate::adapters::json_cache::JsonCache;
+use crate::adapters::json_progress::JsonProgress;
 use crate::adapters::std_fs::{self, StdFs};
 use crate::adapters::stream_server::{StreamConfig, StreamServer};
 use crate::core::media::{self, Delivery, MediaProfile};
 use crate::core::model::ContentDetail;
+// Aliased because `progress` is also the name of a command below, and
+// `progress::up_next` beside `fn up_next` reads as one thing calling itself.
+use crate::core::progress as watched;
+use crate::core::progress::{Mark, ProgressData, UpNext};
 use crate::core::{paths, scanner};
 use crate::ports::cache::LibraryCache;
+use crate::ports::progress::ProgressStore;
 
 struct AppState {
     server: Arc<StreamServer>,
     ffprobe: PathBuf,
+    /// The watch history, read once at startup and written after every change.
+    ///
+    /// Held rather than re-read because the alternative is a load-modify-save
+    /// on every twenty-second tick of a film. The lock is what keeps two
+    /// commands from interleaving a read and a write of the same map; two
+    /// copies of the app on one stick can still overwrite each other, which is
+    /// the same bargain the cache already makes and for the same reason —
+    /// locking across machines is not a thing a portable app can do.
+    history: Mutex<ProgressData>,
+    store: JsonProgress,
+}
+
+impl AppState {
+    fn remember(&self, change: impl FnOnce(&mut ProgressData) -> Option<Mark>) -> Option<Mark> {
+        remember_in(&self.history, &self.store, change)
+    }
+
+    fn history(&self) -> ProgressData {
+        held(&self.history).clone()
+    }
+}
+
+/// The map behind the lock, whether or not a panic elsewhere poisoned it.
+///
+/// A poisoned lock here means some other command panicked while holding it. The
+/// map itself is still a map; refusing to remember anything for the rest of the
+/// session is the worse of the two outcomes, and the alternative on the way out
+/// would be a second panic.
+fn held(history: &Mutex<ProgressData>) -> std::sync::MutexGuard<'_, ProgressData> {
+    history
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+/// Apply a change to the history and put it on the stick.
+///
+/// A failed write is logged, never returned: on a read-only stick this would
+/// otherwise raise an error box every twenty seconds for the whole length of a
+/// film. The session still remembers everything; the stick does not.
+///
+/// Free of `AppState` so that both failure paths can be tested without starting
+/// a stream server and a window to reach them.
+fn remember_in(
+    history: &Mutex<ProgressData>,
+    store: &dyn ProgressStore,
+    change: impl FnOnce(&mut ProgressData) -> Option<Mark>,
+) -> Option<Mark> {
+    let mut history = held(history);
+    let mark = change(&mut history)?;
+    if let Err(e) = store.save(&history) {
+        eprintln!("watch history not saved: {e}");
+    }
+    Some(mark)
+}
+
+/// Unix seconds, for ordering "continue watching".
+///
+/// A clock set before 1970 reads as 0, which costs the ordering and nothing
+/// else — not a reason to fail a command that is otherwise fine.
+fn now_secs() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |since| since.as_secs())
 }
 
 /// Everything the home screen needs, including the case where there is nothing
@@ -447,6 +517,62 @@ fn open_author_site() -> Result<(), String> {
     }
 }
 
+/// Everything the app remembers about what has been watched.
+///
+/// Handed over whole, once, when the library loads: it is a few hundred short
+/// rows at most, and the alternative is a round trip per tile.
+#[tauri::command]
+fn progress(state: State<'_, AppState>) -> BTreeMap<String, Mark> {
+    state.history().items
+}
+
+/// Remember where `path` got to.
+///
+/// Returns what was actually stored, which may be nothing: a few seconds in is
+/// not a position, and the rule for that lives in `core` — see
+/// `ProgressData::record`.
+#[tauri::command]
+fn record_progress(
+    path: String,
+    seconds: f64,
+    duration: f64,
+    state: State<'_, AppState>,
+) -> Result<Option<Mark>, String> {
+    let root = media_root()?;
+    // The same trust boundary every other command that takes a path goes
+    // through. The key is a path, and this file is read back on the next start.
+    paths::resolve_media_file(&root, &path).map_err(|e| e.to_string())?;
+    Ok(state.remember(|history| history.record(&path, seconds, duration, now_secs())))
+}
+
+/// Move a file to the head of the history without claiming any of it was
+/// watched, which is what the end of an episode does to the next one.
+///
+/// Without it a series drops out of "continue watching" for the first fifteen
+/// seconds of every episode — and if the viewer stops inside that window, the
+/// only thing left to show is the episode they just finished.
+#[tauri::command]
+fn take_up(
+    path: String,
+    duration: f64,
+    state: State<'_, AppState>,
+) -> Result<Option<Mark>, String> {
+    let root = media_root()?;
+    paths::resolve_media_file(&root, &path).map_err(|e| e.to_string())?;
+    Ok(state.remember(|history| history.touch(&path, duration, now_secs())))
+}
+
+/// The episode to play now for one content, seasons walked in order.
+///
+/// A deep scan of one folder, which is what the detail page already costs. The
+/// answer is derived rather than remembered on purpose: see `core::progress`.
+#[tauri::command]
+fn up_next(id: String, state: State<'_, AppState>) -> Result<Option<UpNext>, String> {
+    let root = media_root()?;
+    let detail = scanner::scan_content(&StdFs, &root, &id).map_err(|e| e.to_string())?;
+    Ok(watched::up_next(&detail, &state.history()))
+}
+
 /// Why the conversion stopped, if it did.
 ///
 /// A `<video>` reports a failure with no reason attached — it does not have
@@ -520,14 +646,23 @@ pub fn run() -> tauri::Result<()> {
                 std_fs::app_dir_for_exe(&exe),
             ];
 
+            let media_root = root.clone();
             let server = StreamServer::start(StreamConfig {
                 media_root: root,
                 ffmpeg: ffmpeg::tool_path(&tool_dirs, "ffmpeg"),
             })?;
 
+            // Read once here rather than on every command: a film reports its
+            // position every twenty seconds, and each of those would otherwise
+            // be a read of the stick as well as a write.
+            let store = JsonProgress::in_media_root(&media_root);
+            let history = Mutex::new(store.load());
+
             app.manage(AppState {
                 server: Arc::new(server),
                 ffprobe: ffmpeg::tool_path(&tool_dirs, "ffprobe"),
+                history,
+                store,
             });
             Ok(())
         })
@@ -541,7 +676,11 @@ pub fn run() -> tauri::Result<()> {
             fallback_url,
             stop_playback,
             playback_failure,
-            open_author_site
+            open_author_site,
+            progress,
+            record_progress,
+            take_up,
+            up_next
         ])
         .build(tauri::generate_context!())?
         .run(|app, event| {
@@ -574,6 +713,107 @@ mod tests {
         // Stream indexes count from zero, but "Track 0" reads as a bug.
         assert_eq!(track_label(None, None, 0), "Track 1");
         assert_eq!(track_label(None, None, 2), "Track 3");
+    }
+
+    /// Records what it was asked to write, and can be told to refuse — which is
+    /// the read-only stick, the case that must not reach the user as an error.
+    struct FakeStore {
+        saved: Mutex<Vec<ProgressData>>,
+        refuses: bool,
+    }
+
+    impl FakeStore {
+        fn new(refuses: bool) -> Self {
+            Self {
+                saved: Mutex::new(Vec::new()),
+                refuses,
+            }
+        }
+        fn saves(&self) -> usize {
+            self.saved.lock().expect("lock").len()
+        }
+    }
+
+    impl ProgressStore for FakeStore {
+        fn load(&self) -> ProgressData {
+            ProgressData::default()
+        }
+        fn save(&self, data: &ProgressData) -> Result<(), crate::ports::progress::ProgressError> {
+            if self.refuses {
+                return Err(crate::ports::progress::ProgressError("read-only".into()));
+            }
+            self.saved.lock().expect("lock").push(data.clone());
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn a_remembered_position_is_written_out_once() {
+        let history = Mutex::new(ProgressData::default());
+        let store = FakeStore::new(false);
+
+        let mark = remember_in(&history, &store, |data| {
+            data.record("A/b.mkv", 100.0, 1000.0, 7)
+        });
+
+        assert_eq!(mark.map(|m| m.seconds), Some(100.0));
+        assert_eq!(store.saves(), 1);
+        assert_eq!(store.saved.lock().expect("lock")[0].items.len(), 1);
+    }
+
+    #[test]
+    fn a_position_the_rules_refuse_is_not_written_at_all() {
+        // Four seconds of a film is not a position, and writing the file anyway
+        // would mean a save per timeupdate on a stick that gained nothing.
+        let history = Mutex::new(ProgressData::default());
+        let store = FakeStore::new(false);
+
+        let mark = remember_in(&history, &store, |data| {
+            data.record("A/b.mkv", 4.0, 1000.0, 7)
+        });
+
+        assert_eq!(mark, None);
+        assert_eq!(store.saves(), 0, "an empty change still touched the stick");
+    }
+
+    #[test]
+    fn a_stick_that_cannot_be_written_to_does_not_fail_the_command() {
+        // Every twenty seconds of every film goes through here. Returning the
+        // error would put an error box over the picture, on repeat, for a
+        // condition the user cannot do anything about mid-film.
+        let history = Mutex::new(ProgressData::default());
+        let store = FakeStore::new(true);
+
+        let mark = remember_in(&history, &store, |data| {
+            data.record("A/b.mkv", 100.0, 1000.0, 7)
+        });
+
+        assert_eq!(mark.map(|m| m.seconds), Some(100.0));
+        assert_eq!(
+            held(&history).items.len(),
+            1,
+            "the session should still remember it"
+        );
+    }
+
+    #[test]
+    fn a_lock_poisoned_by_an_earlier_panic_still_remembers() {
+        // Refusing for the rest of the session is worse than carrying on: the
+        // map behind a poisoned lock is still a valid map.
+        let history = Mutex::new(ProgressData::default());
+        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _guard = history.lock().expect("lock");
+            panic!("something else went wrong");
+        }));
+        assert!(history.is_poisoned(), "the setup did not poison the lock");
+
+        let store = FakeStore::new(false);
+        let mark = remember_in(&history, &store, |data| {
+            data.record("A/b.mkv", 100.0, 1000.0, 7)
+        });
+
+        assert_eq!(mark.map(|m| m.seconds), Some(100.0));
+        assert_eq!(store.saves(), 1);
     }
 
     #[test]

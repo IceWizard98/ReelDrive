@@ -9,6 +9,18 @@ pub const MEDIA_DIR_NAME: &str = "media";
 /// Hidden index cache, written inside the media folder.
 pub const CACHE_FILE_NAME: &str = ".reeldrive-cache.json";
 
+/// Hidden watch history, written inside the media folder beside the cache so it
+/// travels with the stick: where you got to is only useful on the machine you
+/// carry it to next.
+///
+/// A file of its own rather than a field in the cache, because the two have
+/// opposite lifetimes — the cache is discarded on every release, and this is
+/// the one thing here the user cannot reproduce.
+pub const PROGRESS_FILE_NAME: &str = ".reeldrive-progress.json";
+
+/// Where a history this build cannot read is put, instead of being deleted.
+pub const PROGRESS_SET_ASIDE_FILE_NAME: &str = ".reeldrive-progress.unreadable.json";
+
 /// Cache files written by earlier releases under a different name. Nothing will
 /// ever read these again, so they are removed rather than left on the stick.
 /// Add to this list whenever `CACHE_FILE_NAME` changes.
