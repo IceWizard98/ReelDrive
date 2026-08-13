@@ -43,7 +43,8 @@ with no internet, and the one that has never heard of ffmpeg.
 2. Unpack it onto the stick. On Windows and Linux the archive holds three files,
    and all three have to stay in the same folder.
 3. Create a folder named `media` beside the app, one subfolder per title.
-4. Open the app.
+4. Open the app. On macOS the first launch is refused and has to be allowed in
+   System Settings: [five clicks, once](#letting-macos-open-it).
 
 What the stick holds, per platform:
 
@@ -491,9 +492,10 @@ On read-only media nothing is saved and everything else still works.
 
 ## Platform notes
 
-**macOS** — the bundle carries no Developer ID, so Gatekeeper blocks the first
-launch from an external volume: right-click → Open, or
-`xattr -dr com.apple.quarantine ReelDrive.app`.
+**macOS** bundles carry no Developer ID and are not notarised, so Gatekeeper
+blocks the first launch and sends you to System Settings to allow it by hand.
+It is five clicks, once per Mac: see
+[Letting macOS open it](#letting-macos-open-it).
 
 **Windows** — `ffmpeg.exe` and `ffprobe.exe` come out of the archive next to
 `ReelDrive.exe` and have to stay there. SmartScreen will warn about an unknown
@@ -505,6 +507,46 @@ there: an AppImage runs from a temporary read-only mount, so the app follows
 Ubuntu 24.04, so it needs glibc ≥ 2.39. It must be executable, which is a
 problem on FAT32 and exFAT: those filesystems have no execute bit, and depending
 on the mount options the AppImage may refuse to run. An ext4 stick avoids it.
+
+### Letting macOS open it
+
+Anything downloaded from the internet arrives flagged, and macOS refuses to open
+an app that no registered developer has signed. There is no way around it from
+inside the app, and since macOS 15 there is no right-click shortcut either: the
+permission is given once, in System Settings, and then never asked again on that
+Mac.
+
+1. **Double-click `ReelDrive.app`.** It will not open. A dialog says the app
+   *"is not opened"* or *"cannot be opened because Apple cannot check it for
+   malicious software"*. Click **Done** or **OK**. This refusal is a required
+   step: until macOS has blocked the app once, there is nothing to allow.
+2. **Open System Settings** from the Apple menu in the top left corner of the
+   screen.
+3. **Go to Privacy & Security** in the sidebar, then scroll that page down to
+   the bottom, past everything else, to the **Security** section.
+4. **Find the line about ReelDrive.** It reads *"ReelDrive was blocked to
+   protect your Mac"*, or *"was blocked from use because it is not from an
+   identified developer"*. Click **Open Anyway** beside it.
+5. **Confirm.** macOS asks for Touch ID or your login password, then shows the
+   warning one last time: click **Open Anyway** again. The app opens.
+
+From then on double-clicking it is enough.
+
+If the line in step 4 is not there, the block has expired: macOS only shows it
+for about an hour after a refused launch. Try to open the app again and go back
+to Privacy & Security.
+
+The whole thing in one line in the Terminal, if you prefer, with the path to
+wherever the app actually is:
+
+```sh
+xattr -dr com.apple.quarantine /Volumes/STICK/ReelDrive.app
+```
+
+The permission is remembered per Mac, not per stick. On the next machine the
+same five clicks are needed again, which is the honest cost of an app that is
+not signed with a paid Apple developer certificate. Building it yourself avoids
+it entirely: an app that never came from the internet is never flagged.
 
 ### Why the tools cannot go inside the file
 
