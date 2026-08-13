@@ -7,7 +7,7 @@
 
 # ReelDrive
 
-**Your film library on a USB stick. One executable, one folder, no installation.**
+**Your film library on a USB stick. Unpack it, add a folder, no installation.**
 
 No server, no account, no network, no configuration file. ReelDrive reads the
 filesystem and works out on its own what is a film and what is a series.
@@ -40,15 +40,32 @@ with no internet, and the one that has never heard of ffmpeg.
 
 1. Download the archive for your platform from
    [Releases](https://github.com/IceWizard98/ReelDrive/releases).
-2. Unpack it onto the stick, keeping the files together.
+2. Unpack it onto the stick. On Windows and Linux the archive holds three files,
+   and all three have to stay in the same folder.
 3. Create a folder named `media` beside the app, one subfolder per title.
 4. Open the app.
 
-That is the whole product:
+What the stick holds, per platform:
+
+```
+macOS                    Windows                  Linux
+/  (stick root)          /  (stick root)          /  (stick root)
+├── ReelDrive.app/       ├── ReelDrive.exe        ├── ReelDrive.AppImage
+│   (ffmpeg inside)      ├── ffmpeg.exe           ├── ffmpeg
+│                        ├── ffprobe.exe          ├── ffprobe
+└── media/               └── media/               └── media/
+```
+
+Only macOS keeps the tools out of sight, because a `.app` is a folder and
+"inside the app" and "beside the app" are the same place. A `.exe` and an
+AppImage are single files, so `ffmpeg` and `ffprobe` travel beside them: move
+the app on its own and nothing plays.
+[Why they cannot go in](#why-the-tools-cannot-go-inside-the-file).
+
+The `media/` folder is yours to fill:
 
 ```
 /  (stick root)
-├── ReelDrive.app/              # macOS (or ReelDrive.exe, or the AppImage)
 └── media/                      # fixed name, you create it
     ├── Scrubs/
     │   ├── cover.jpg           # optional
@@ -69,7 +86,7 @@ not a fallback.
 
 - **Reads what you already have.** No import step, no renaming, no metadata
   scraping. The folder names are the library.
-- **Plays what the machine cannot.** `ffmpeg` travels inside the app and steps
+- **Plays what the machine cannot.** `ffmpeg` travels with the app and steps
   in only when the format needs it — see [Playback](#playback).
 - **Subtitles, embedded or beside the file.** Re-cut on every seek so they stay
   on the picture's clock, at a size that follows the picture.
@@ -488,6 +505,23 @@ there: an AppImage runs from a temporary read-only mount, so the app follows
 Ubuntu 24.04, so it needs glibc ≥ 2.39. It must be executable, which is a
 problem on FAT32 and exFAT: those filesystems have no execute bit, and depending
 on the mount options the AppImage may refuse to run. An ext4 stick avoids it.
+
+### Why the tools cannot go inside the file
+
+A `.exe` and an AppImage are single files, so carrying the tools inside means
+embedding them and unpacking them somewhere writable at every launch. It is
+possible, and it is worse on three counts:
+
+- **Licence.** The tools are GPL builds, and today they are only aggregated
+  next to an MIT app, at arm's length over the command line. Inside one binary
+  they stop being a separate work, and the binary inherits the GPL. See
+  [License](#license).
+- **Weight.** Around 180 MB written to a temporary folder on a machine that may
+  have neither the room nor the permission, from a stick that is slow to read.
+- **Trust.** An executable that drops executables and runs them is what a
+  dropper does, and SmartScreen already has an opinion about an unsigned app.
+
+Beside the app costs one rule to remember and none of that.
 
 ## Contributing
 
