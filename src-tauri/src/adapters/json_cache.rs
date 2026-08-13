@@ -3,6 +3,7 @@
 
 use std::path::{Path, PathBuf};
 
+use crate::adapters::json_file;
 use crate::core::paths;
 use crate::defaults;
 use crate::ports::cache::{
@@ -68,67 +69,12 @@ impl JsonCache {
             }
         }
     }
-
-    /// Sweep up temporaries `store` never got to rename.
-    ///
-    /// Matched narrowly and by both ends — our own stem in front, `.tmp`
-    /// behind, directly in this folder — because everything else here belongs
-    /// to the user. `.reeldrive-cache.json` fails the suffix, someone else's
-    /// `.tmp` fails the stem.
-    ///
-    /// A second copy of the app writing its own temporary at this exact moment
-    /// loses it and logs that the cache was not saved: survivable, self-cured
-    /// by the next start, and cheaper than teaching this to tell a live write
-    /// from an abandoned one on a filesystem whose timestamps are two seconds
-    /// wide.
-    fn remove_stale_temporaries(&self) {
-        let (Some(dir), Some(stem)) = (
-            self.path.parent(),
-            Path::new(defaults::CACHE_FILE_NAME)
-                .file_stem()
-                .and_then(|s| s.to_str()),
-        ) else {
-            return;
-        };
-        let prefix = format!("{stem}.");
-
-        let Ok(entries) = std::fs::read_dir(dir) else {
-            return;
-        };
-        for entry in entries.flatten() {
-            let name = entry.file_name();
-            let Some(name) = name.to_str() else { continue };
-            if name.starts_with(&prefix) && name.ends_with(".tmp") && entry.path().is_file() {
-                if let Err(e) = std::fs::remove_file(entry.path()) {
-                    eprintln!("half-written cache not removed: {e}");
-                }
-            }
-        }
-    }
-}
-
-/// Where `store` writes before renaming over the real cache.
-///
-/// The process id alone is not enough and the reason is this app in
-/// particular: it is meant to be carried around, so the ordinary case is two
-/// *different machines* with the same stick mounted, handing out process ids
-/// that know nothing of each other. Same number, same name, interleaved
-/// writes, one truncated JSON. The random tail is what makes the name unique
-/// where the pid cannot. The pid stays because it says which copy left a
-/// temporary behind when one is found.
-fn temp_path(path: &Path) -> PathBuf {
-    let mut salt = [0u8; 4];
-    // A failure here would only cost uniqueness, and a zeroed salt is still a
-    // valid name — no reason to fail a cache write over it.
-    let _ = getrandom::fill(&mut salt);
-    let salt: String = salt.iter().map(|b| format!("{b:02x}")).collect();
-    path.with_extension(format!("{}-{salt}.tmp", std::process::id()))
 }
 
 impl LibraryCache for JsonCache {
     fn load(&self) -> Option<LibraryCacheData> {
         self.remove_legacy_files(defaults::LEGACY_CACHE_FILE_NAMES);
-        self.remove_stale_temporaries();
+        json_file::remove_stale_temporaries(&self.path, "cache");
 
         let bytes = std::fs::read(&self.path).ok()?;
         let Ok(data) = serde_json::from_slice::<LibraryCacheData>(&bytes) else {
@@ -148,18 +94,7 @@ impl LibraryCache for JsonCache {
 
     fn store(&self, data: &LibraryCacheData) -> Result<(), CacheError> {
         let bytes = serde_json::to_vec(data).map_err(|e| CacheError(e.to_string()))?;
-
-        // Write beside the target and rename: a stick pulled mid-write then
-        // leaves the previous cache intact instead of a truncated one. Two
-        // copies of the app writing at once each get their own temporary, so
-        // neither can overwrite the other's half-written file.
-        let temp = temp_path(&self.path);
-        std::fs::write(&temp, &bytes).map_err(|e| CacheError(e.to_string()))?;
-        if let Err(e) = std::fs::rename(&temp, &self.path) {
-            let _ = std::fs::remove_file(&temp);
-            return Err(CacheError(e.to_string()));
-        }
-        Ok(())
+        json_file::write_atomically(&self.path, &bytes).map_err(|e| CacheError(e.to_string()))
     }
 }
 
@@ -383,24 +318,13 @@ mod tests {
     }
 
     #[test]
-    fn two_writers_never_pick_the_same_temporary_name() {
-        // The pid is unique per machine, and this app travels: the same stick
-        // mounted on two computers gets two unrelated pids that collide as a
-        // matter of course. Both would write the same temporary, interleaved,
-        // and the rename would publish a truncated file.
-        let dir = TempDir::new().expect("tempdir");
-        let path = dir.path().join(defaults::CACHE_FILE_NAME);
-        let names: std::collections::HashSet<PathBuf> = (0..64).map(|_| temp_path(&path)).collect();
-        assert_eq!(names.len(), 64, "two temporaries shared a name");
-    }
-
-    #[test]
     fn the_temporary_is_still_swept_up_by_the_cleanup() {
-        // The sweep matches by both ends; a name it no longer recognises would
-        // litter the user's stick for good.
+        // Both halves live in `json_file` now, and the thing this still pins is
+        // that the cache hands it the same path both times: a stem the sweep
+        // does not recognise would litter the user's stick for good.
         let dir = TempDir::new().expect("tempdir");
         let cache = JsonCache::in_media_root(dir.path());
-        let orphan = temp_path(cache.path());
+        let orphan = json_file::temp_path(cache.path());
         std::fs::write(&orphan, b"half a cache").expect("write");
 
         assert_eq!(cache.load(), None);
