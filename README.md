@@ -17,7 +17,7 @@ filesystem and works out on its own what is a film and what is a series.
 [![Tauri](https://img.shields.io/badge/Tauri-2-24C8DB?logo=tauri&logoColor=white)](https://tauri.app)
 [![Svelte](https://img.shields.io/badge/Svelte-5-FF3E00?logo=svelte&logoColor=white)](https://svelte.dev)
 [![Rust](https://img.shields.io/badge/Rust-1.85-000000?logo=rust&logoColor=white)](https://www.rust-lang.org)
-[![Tests](https://img.shields.io/badge/tests-232%20Rust%20%C2%B7%2084%20frontend-2ea043)](#development)
+[![Tests](https://img.shields.io/badge/tests-286%20Rust%20%C2%B7%20141%20frontend-2ea043)](#development)
 [![License](https://img.shields.io/badge/license-MIT-1f2430)](LICENSE)
 
 <img src=".github/screenshots/library.png" alt="The library screen: a grid of posters grouped into series and movies" width="900">
@@ -75,8 +75,11 @@ not a fallback.
   on the picture's clock, at a size that follows the picture.
 - **More than one audio track**, chosen mid-film without restarting it.
 - **Keyboard throughout**, including the grid — see [Keyboard](#keyboard).
-- **Nothing left behind.** One hidden index file inside `media/`, deletable at
-  any time. Nothing is written anywhere else on the host.
+- **Picks up where you left off**, including the next episode across the end of
+  a season — see [Where you got to](#where-you-got-to). It travels with the
+  stick, so it is the same on the next machine.
+- **Nothing left behind.** Two hidden files inside `media/`, deletable at any
+  time. Nothing is written anywhere else on the host.
 
 <div align="center">
 <img src=".github/screenshots/title.png" alt="A series page: poster, seasons as tabs, and the episode list" width="880">
@@ -299,7 +302,7 @@ by position — `Home` and `End` reach the ends.
 npm install
 REELDRIVE_MEDIA=/path/to/media npm run tauri dev
 
-just test      # or: make test    — 232 Rust, 84 frontend
+just test      # or: make test    — 286 Rust, 141 frontend
 just check     # or: make check   — tests, clippy, formatting, frontend build
 ```
 
@@ -393,6 +396,71 @@ cost is one walk of the stick after each update.
 Anything unreadable is **deleted**, not merely ignored, along with cache files
 left under names earlier releases used. Otherwise every rename and every format
 change would leave one more hidden file on your stick for good.
+
+## Where you got to
+
+Stop a film and it opens there next time. Finish an episode and the next one
+starts by itself, including when the next one is in the following season — the
+press this app used to be missing.
+
+The library marks what has been started, with a bar across the poster and a
+**Continue watching** row above the grid; the episode list ticks what has been
+watched and shows how far an unfinished one got. The button on a title becomes
+**Resume**, and it names the episode, because where you got to may be in a
+season the tabs are not showing.
+
+| | |
+| --- | --- |
+| Remembered after | 15 seconds, so a file opened by mistake is not "started" — or a twentieth of the running time, whichever comes first, so short files are not walled out |
+| Counted as finished when | only the credits are left: two minutes, or 5% of the running time if that is longer, and never before four fifths of a short file |
+| What is stored | one line per video: the position, the length, and when |
+| Where "next" comes from | the seasons, walked in order, first one not finished |
+
+Both rules are lengths of time before they are percentages, because that is
+what they describe. Fifteen seconds is a moment of a film and the whole of a
+clip; closing credits run for minutes whatever the running time is. A twentieth
+of a twenty-minute episode is one minute — shorter than the outro of every anime
+ever made, so the viewer stops when the song starts and the episode stays
+unwatched for ever.
+
+| Running time | Started after | Finished at | Credits allowed |
+| --- | --- | --- | --- |
+| 4 seconds | 0.2s | 80% | — |
+| 1 minute | 3s | 80% | 12s |
+| 20 minutes | 15s | 18:00 | 2:00 |
+| 40 minutes | 15s | 38:00 | 2:00 |
+| 45 minutes | 15s | 42:45 | 2:15 |
+| 2 hours | 15s | 1:54:00 | 6:00 |
+
+The two allowances meet at forty minutes, where 5% of the running time is
+exactly the two minutes, which is why anything longer behaves exactly as a flat
+95% always did. Below ten minutes the four-fifths floor is what applies, because
+two minutes of credits is more than a fifth of the film.
+
+**Nothing remembers which episode you are on.** It is worked out each time from
+the folders and the history together, so renaming a folder or dropping in the
+episodes you were missing cannot leave a pointer quietly aiming at the wrong
+thing.
+
+### The history file
+
+`media/.reeldrive-progress.json`, hidden, beside the cache and deliberately not
+part of it. It travels with the stick, which is the point: where you got to is
+most useful on the machine you plug it into next.
+
+The two files have opposite rules, and the difference is the reason there are
+two. **A cache can be rebuilt by walking the stick; this cannot be rebuilt by
+anything**, so it is never discarded for having been written by another build,
+and a file this build cannot read is renamed to
+`.reeldrive-progress.unreadable.json` rather than deleted — a history written by
+a *newer* copy of the app on the same stick is exactly what an older one sees,
+and deleting it would wipe your history every time the two were used in turn.
+
+It is plain JSON and yours to edit or delete. It is also read back as untrusted
+input, so a hand-edited row naming a path outside the media folder, or a
+position longer than the film, is dropped on the way in.
+
+On read-only media nothing is saved and everything else still works.
 
 ## Platform notes
 
