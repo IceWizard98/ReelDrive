@@ -4,7 +4,10 @@ import Player from "./Player.svelte";
 
 // Everything the player asks the backend for. Mocked as a whole: the real
 // module reaches for Tauri's IPC, which does not exist here.
-vi.mock("./api.js", () => ({
+// `clock` comes through as the real one: it is a pure formatter, and a second
+// copy written here would let the two drift while every test went on passing.
+vi.mock("./api.js", async (importOriginal) => ({
+  clock: (await importOriginal()).clock,
   audioUrl: vi.fn(),
   seekUrl: vi.fn(),
   subtitleUrl: vi.fn(),
@@ -529,5 +532,242 @@ describe("a playback failure while a nudge is still pending", () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+});
+
+describe("opening a film part way through", () => {
+  // `startAt` is not passed to the backend as a stream offset on purpose:
+  // asking for a stream that begins midway turns a file the platform plays
+  // untouched into a repackaged one. The player seeks instead, and only a
+  // stream that cannot seek itself costs a conversion.
+  function resume(startAt, overrides = {}) {
+    return render(Player, {
+      props: {
+        source: source(overrides),
+        relativePath: "Film.mkv",
+        onexit: vi.fn(),
+        startAt,
+      },
+    });
+  }
+
+  it("seeks a directly played file itself, without asking for another stream", async () => {
+    const { container } = resume(900, { delivery: "direct" });
+    const video = container.querySelector("video");
+    let seekedTo = 0;
+    Object.defineProperty(video, "currentTime", {
+      configurable: true,
+      get: () => seekedTo,
+      set: (value) => (seekedTo = value),
+    });
+
+    await fireEvent.loadedMetadata(video);
+
+    expect(seekedTo).toBe(900);
+    expect(api.seekUrl).not.toHaveBeenCalled();
+    expect(api.fallbackUrl).not.toHaveBeenCalled();
+  });
+
+  it("asks for a new stream when the one it has cannot reach the position", async () => {
+    // A converted film arrives as a playlist starting where it was asked for,
+    // and nothing before that exists to seek into.
+    const { container } = resume(900);
+    await fireEvent.loadedMetadata(container.querySelector("video"));
+
+    await waitFor(() => expect(api.seekUrl).toHaveBeenCalledTimes(1));
+    expect(api.seekUrl.mock.calls[0][1]).toBe(900);
+  });
+
+  it("leaves a film opened from the start alone", async () => {
+    const { container } = resume(0, { delivery: "direct" });
+    const video = container.querySelector("video");
+    let seekedTo = 0;
+    Object.defineProperty(video, "currentTime", {
+      configurable: true,
+      get: () => seekedTo,
+      set: (value) => (seekedTo = value),
+    });
+
+    await fireEvent.loadedMetadata(video);
+
+    expect(seekedTo).toBe(0);
+    expect(api.seekUrl).not.toHaveBeenCalled();
+  });
+
+  it("does not resume a second time when a later stream reloads the element", async () => {
+    // Every restarted stream fires `loadedmetadata` again. Resuming on each of
+    // them would drag the film back to where it was opened every time the user
+    // seeked away from it.
+    const { container } = resume(900);
+    const video = container.querySelector("video");
+
+    await fireEvent.loadedMetadata(video);
+    await waitFor(() => expect(api.seekUrl).toHaveBeenCalledTimes(1));
+    await fireEvent.loadedMetadata(video);
+    await fireEvent.loadedMetadata(video);
+
+    expect(api.seekUrl).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not open a film on its own credits", async () => {
+    // A position within a second of the end would start the film, end it, and
+    // with autoplay on that reads as an episode skipped.
+    const { container } = resume(3599.5, { delivery: "direct" });
+    const video = container.querySelector("video");
+    let seekedTo = 0;
+    Object.defineProperty(video, "currentTime", {
+      configurable: true,
+      get: () => seekedTo,
+      set: (value) => (seekedTo = value),
+    });
+
+    await fireEvent.loadedMetadata(video);
+
+    expect(seekedTo).toBe(0);
+    expect(api.seekUrl).not.toHaveBeenCalled();
+  });
+});
+
+describe("saying where the film has got to", () => {
+  function watch(props = {}) {
+    const onposition = vi.fn();
+    const rendered = render(Player, {
+      props: {
+        source: source({ delivery: "direct" }),
+        relativePath: "Film.mkv",
+        onexit: vi.fn(),
+        onposition,
+        ...props,
+      },
+    });
+    return { ...rendered, onposition };
+  }
+
+  async function at(video, seconds) {
+    Object.defineProperty(video, "currentTime", { configurable: true, value: seconds });
+    await fireEvent.timeUpdate(video);
+  }
+
+  it("says so no more often than every twenty seconds while it plays", async () => {
+    // `timeupdate` fires four times a second and every report is a write to a
+    // stick. A position accurate to twenty seconds is accurate enough to
+    // resume from; a write four times a second is not something to do to a
+    // USB stick for two hours.
+    const { container, onposition } = watch();
+    const video = container.querySelector("video");
+    await fireEvent.play(video);
+
+    for (const second of [1, 5, 10, 19]) await at(video, second);
+    expect(onposition).not.toHaveBeenCalled();
+
+    await at(video, 21);
+    expect(onposition).toHaveBeenCalledWith("Film.mkv", 21, 3600);
+
+    await at(video, 30);
+    expect(onposition).toHaveBeenCalledTimes(1);
+
+    await at(video, 45);
+    expect(onposition).toHaveBeenCalledTimes(2);
+  });
+
+  it("says so at once when the film is paused", async () => {
+    // Pausing is the moment a viewer is most likely to walk away, and the next
+    // thing that happens may be the machine being shut down.
+    const { container, onposition } = watch();
+    const video = container.querySelector("video");
+    await fireEvent.play(video);
+    await at(video, 5);
+    await fireEvent.pause(video);
+
+    expect(onposition).toHaveBeenCalledWith("Film.mkv", 5, 3600);
+  });
+
+  it("says so on the way out, however the player was left", async () => {
+    // Escape, the back button and the end of the film are all this component
+    // being unmounted. A position saved on some of those routes and not others
+    // is a feature that loses your place depending on how you left.
+    const { container, onposition, unmount } = watch();
+    const video = container.querySelector("video");
+    await fireEvent.play(video);
+    await at(video, 5);
+    onposition.mockClear();
+
+    unmount();
+
+    expect(onposition).toHaveBeenCalledWith("Film.mkv", 5, 3600);
+  });
+
+  it("says nothing about a film that has not started arriving", async () => {
+    // Buffering, the position is zero — and zero as a remembered position
+    // means "start again from the beginning", which is the one thing it must
+    // never say about a film somebody was halfway through.
+    const { onposition, unmount } = watch();
+    unmount();
+    expect(onposition).not.toHaveBeenCalled();
+  });
+
+  it("counts from the film's clock, not the stream's", async () => {
+    // A restarted stream begins at its own zero. Reporting the element's own
+    // `currentTime` would remember a position an hour earlier than the truth.
+    const { container, onposition } = watch({
+      source: source({ delivery: "transcode", offset: 1800 }),
+    });
+    const video = container.querySelector("video");
+    await fireEvent.play(video);
+    await at(video, 40);
+
+    expect(onposition).toHaveBeenCalledWith("Film.mkv", 1840, 3600);
+  });
+});
+
+describe("the end of a film", () => {
+  it("is told apart from every other way out of the player", async () => {
+    // Only one of the two can lead into the next episode.
+    const onexit = vi.fn();
+    const onfinished = vi.fn();
+    const { container } = render(Player, {
+      props: {
+        source: source({ delivery: "direct" }),
+        relativePath: "Film.mkv",
+        onexit,
+        onfinished,
+      },
+    });
+
+    await fireEvent.ended(container.querySelector("video"));
+
+    expect(onfinished).toHaveBeenCalledTimes(1);
+    expect(onexit).not.toHaveBeenCalled();
+  });
+
+  it("is still an exit when nothing is listening for it", async () => {
+    const onexit = vi.fn();
+    const { container } = render(Player, {
+      props: { source: source({ delivery: "direct" }), relativePath: "Film.mkv", onexit },
+    });
+
+    await fireEvent.ended(container.querySelector("video"));
+
+    expect(onexit).toHaveBeenCalledTimes(1);
+  });
+
+  it("is not declared when only a piece of a converted stream ended", async () => {
+    // A restarted stream ends at the end of its own piece, which is the end of
+    // the film only if it started at the beginning.
+    const onexit = vi.fn();
+    const onfinished = vi.fn();
+    const { container } = render(Player, {
+      props: {
+        source: source({ delivery: "transcode", offset: 100 }),
+        relativePath: "Film.mkv",
+        onexit,
+        onfinished,
+      },
+    });
+
+    await fireEvent.ended(container.querySelector("video"));
+
+    expect(onfinished).not.toHaveBeenCalled();
+    expect(onexit).not.toHaveBeenCalled();
   });
 });

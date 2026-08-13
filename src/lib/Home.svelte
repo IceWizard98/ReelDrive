@@ -10,7 +10,13 @@
     onopen,
     onreload,
     focusId = null,
+    // Which section the tile to refocus was in — a title can be on screen
+    // twice, and without this coming out of one always landed on the copy in
+    // the top row rather than on the tile that was clicked.
+    focusRow = "",
     pending = null,
+    // What has been watched, keyed by the file's path under the media folder.
+    progress = {},
     query = $bindable(""),
     kind = $bindable("all"),
   } = $props();
@@ -37,15 +43,73 @@
   let series = $derived(matches.filter((c) => c.kind === "series"));
   let movies = $derived(matches.filter((c) => c.kind === "movie"));
 
+  /// The most recent thing watched inside one title's folder.
+  ///
+  /// Matched on the `{id}/` prefix, not the bare id, or `Scrubs` would collect
+  /// the history of `Scrubs 2` — a different show on the same stick. The same
+  /// rule the backend applies; it is repeated here only because redrawing the
+  /// grid from a mark the player just reported must not cost a round trip.
+  function latest(id) {
+    const prefix = `${id}/`;
+    let best = null;
+    for (const [path, mark] of Object.entries(progress)) {
+      if (!path.startsWith(prefix)) continue;
+      // Ties to the later of the two, which is the one written last: `at` is
+      // whole seconds, and the end of an episode dates the next one inside the
+      // same one often enough. Reading the tie the other way left a series the
+      // viewer had just moved on in reading "Watched".
+      if (!best || mark.at >= best.at) best = mark;
+    }
+    return best;
+  }
+
+  /// How much of a title has been watched, 0 to 1, or `null` for one nobody has
+  /// opened.
+  ///
+  /// For a series this is the progress of the episode that would be resumed,
+  /// not of the series: counting episodes would mean a deep scan of every
+  /// folder on the home screen, which is the exact cost the shallow scan exists
+  /// to avoid. It is the honest thing to draw with what is already known.
+  function watchedFraction(id) {
+    const mark = latest(id);
+    if (!mark) return null;
+    if (mark.done) return 1;
+    if (!(mark.duration > 0)) return null;
+    return Math.min(1, Math.max(0, mark.seconds / mark.duration));
+  }
+
+  function watchedLabel(id) {
+    const fraction = watchedFraction(id);
+    if (fraction === null) return "";
+    return fraction === 1 ? "Watched" : `${Math.round(fraction * 100)}% watched`;
+  }
+
+  // Titles with something on the clock, most recently touched first. Capped
+  // because a row of everything ever started is not a row of what is being
+  // watched — it is the library again, in a worse order.
+  const CONTINUING_MOST = 12;
+  let continuing = $derived(
+    library.contents
+      .map((content) => ({ content, mark: latest(content.id) }))
+      .filter((entry) => entry.mark)
+      .sort((a, b) => b.mark.at - a.mark.at)
+      .slice(0, CONTINUING_MOST)
+      .map((entry) => entry.content),
+  );
+
   // Two headed groups are only worth it when both are there to be told apart.
   // Searching collapses them, and so does a type filter — a "Series" heading
   // over the only kind on screen is a word that says nothing.
+  // Only on the unnarrowed library. A search or a type filter is the user
+  // saying what they want on screen, and a row of something else above it — in
+  // an order they did not ask for — is the app arguing with them.
   let sections = $derived(
     query.trim()
       ? [{ label: "Results", items: matches }]
       : kind !== "all"
         ? [{ label: null, items: matches }]
         : [
+            { label: "Continue watching", items: continuing },
             { label: "Series", items: series },
             { label: "Movies", items: movies },
           ].filter((section) => section.items.length > 0),
@@ -164,7 +228,15 @@
   /// of the library every time.
   $effect(() => {
     if (!focusId || !grids) return;
-    focusTile(grids.querySelector(`[data-id="${CSS.escape(focusId)}"]`));
+    const id = CSS.escape(focusId);
+    // The section first, because a title can be on screen twice. Falling back
+    // to the id alone matters when the section it was opened from has since
+    // gone — finishing the last episode of a series takes it out of "continue
+    // watching", and the tile to come back to is the one in "Series".
+    focusTile(
+      grids.querySelector(`[data-id="${id}"][data-row="${CSS.escape(focusRow)}"]`) ??
+        grids.querySelector(`[data-id="${id}"]`),
+    );
   });
 </script>
 
@@ -263,6 +335,7 @@
     </div>
   {:else}
     {#each sections as section (section.label ?? kind)}
+      {@const row = section.label ?? ""}
       <section>
         <!-- No heading under a lit chip: it would repeat the chip word for
              word, and the count it carries is already in the volume line. -->
@@ -280,7 +353,10 @@
               mediaRoot={library.media_root}
               {onopen}
               {index}
+              {row}
               pending={content.id === pending}
+              watched={watchedFraction(content.id)}
+              watchedLabel={watchedLabel(content.id)}
             />
           {/each}
         </div>

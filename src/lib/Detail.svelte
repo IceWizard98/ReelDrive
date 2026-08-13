@@ -1,8 +1,19 @@
 <script>
-  import { fileUrl, initials, placeholderStyle } from "./api.js";
+  import { clock, fileUrl, initials, placeholderStyle } from "./api.js";
   import Icon from "./Icon.svelte";
 
-  let { detail, mediaRoot, onback, onplay } = $props();
+  let {
+    detail,
+    mediaRoot,
+    onback,
+    onplay,
+    // What has been watched, keyed by the file's path under the media folder.
+    progress = {},
+    // Which episode to carry on with, worked out by the backend from the
+    // seasons and the history together — including across the end of a season,
+    // which is the press this page used to be missing.
+    upNext = null,
+  } = $props();
 
   let isSeries = $derived(detail.body.kind === "series");
   let seasons = $derived(isSeries ? detail.body.seasons : []);
@@ -40,6 +51,57 @@
       ? `Series · ${seasons.length} ${seasons.length === 1 ? "season" : "seasons"} · ${episodeCount} ${episodeCount === 1 ? "episode" : "episodes"}`
       : "Movie",
   );
+
+  // Only once something here has actually been played. A title nobody has
+  // opened has nothing to resume, and "Resume · Episode 1 · 0:00" over a series
+  // never watched is a button lying about where you were.
+  let resumable = $derived(!!upNext && !upNext.fresh);
+
+  /// What the resume button says it will do.
+  ///
+  /// The episode is named because it may not be the one the tabs are showing —
+  /// a season that ended leads into the next one — so a button reading only
+  /// "Resume" would silently play something off-screen. The time is left off
+  /// when there is none: an episode taken up but not yet started resumes at
+  /// zero, and "· 0:00" reads as a position rather than as its absence.
+  let resumeLabel = $derived.by(() => {
+    if (!upNext) return "";
+    const where =
+      upNext.season === null
+        ? []
+        : [seasonLabel(seasons.find((s) => s.number === upNext.season) ?? { number: upNext.season }),
+           `Episode ${upNext.episode}`];
+    if (upNext.seconds > 0) where.push(clock(upNext.seconds));
+    return where.join(" · ");
+  });
+
+  /// Play what comes next, from `seconds` in — or from where it was left.
+  function resume(seconds = upNext.seconds) {
+    onplay(upNext.file, upNext.subtitles, seconds);
+  }
+
+  /// Which second picking an episode out of the list starts it at.
+  ///
+  /// The rail on the row says where that episode got to, and a click that
+  /// ignored it would not merely restart the episode: twenty seconds later the
+  /// player reports the new position over the old one, so the only way to reach
+  /// a particular episode would be the way that erases where you were in it.
+  /// The rule is the backend's `resume_seconds` — a finished one starts again.
+  function resumeAt(file) {
+    const mark = progress[file];
+    return mark && !mark.done ? mark.seconds : 0;
+  }
+
+  /// How much of one episode has been watched, 0 to 1, or `null` for one that
+  /// has never been opened. A finished episode reads as a full bar whatever
+  /// second it happened to stop on.
+  function watched(file) {
+    const mark = progress[file];
+    if (!mark) return null;
+    if (mark.done) return 1;
+    if (!(mark.duration > 0)) return null;
+    return Math.min(1, Math.max(0, mark.seconds / mark.duration));
+  }
 
   /// The folder's own name wins when it has one. A user who typed
   /// "Season 1 - inizio" gets that back: the part after the number is theirs,
@@ -106,24 +168,39 @@
         </p>
         <h1>{detail.summary.title}</h1>
 
-        {#if !isSeries}
-          <button
-            class="play"
-            use:focusOnMount
-            onclick={() => onplay(detail.body.file, detail.body.subtitles)}
-          >
-            <Icon name="play" size={15} /> Play
-          </button>
-        {:else if firstEpisode}
-          <button
-            class="play"
-            use:focusOnMount
-            onclick={() => onplay(firstEpisode.file, firstEpisode.subtitles)}
-          >
-            <Icon name="play" size={15} />
-            Play {seasonLabel(currentSeason)} · Episode {firstEpisode.number}
-          </button>
-        {/if}
+        <!-- What the button offers depends on whether anything here has been
+             watched. Untouched, it is the button this page has always had: the
+             first episode of whichever season the tabs are showing, which is
+             what the tabs are for. Once there is a history, the one thing
+             anybody came here to do is carry on — and where to carry on from
+             may be in a season the tabs are not showing, which is exactly the
+             press that used to be missing. -->
+        <div class="actions">
+          {#if resumable}
+            <button class="play" use:focusOnMount onclick={() => resume()}>
+              <Icon name="play" size={15} />
+              Resume {resumeLabel}
+            </button>
+            <button class="again" onclick={() => resume(0)}>Start over</button>
+          {:else if !isSeries}
+            <button
+              class="play"
+              use:focusOnMount
+              onclick={() => onplay(detail.body.file, detail.body.subtitles)}
+            >
+              <Icon name="play" size={15} /> Play
+            </button>
+          {:else if firstEpisode}
+            <button
+              class="play"
+              use:focusOnMount
+              onclick={() => onplay(firstEpisode.file, firstEpisode.subtitles)}
+            >
+              <Icon name="play" size={15} />
+              Play {seasonLabel(currentSeason)} · Episode {firstEpisode.number}
+            </button>
+          {/if}
+        </div>
       </div>
     </div>
 
@@ -188,9 +265,21 @@
           </li>
         {/if}
         {#each episodes as episode (episode.file)}
+          {@const seen = watched(episode.file)}
           <li>
-            <button onclick={() => onplay(episode.file, episode.subtitles)}>
-              <span class="num">{String(episode.number).padStart(2, "0")}</span>
+            <button onclick={() => onplay(episode.file, episode.subtitles, resumeAt(episode.file))}>
+              <!-- The number is replaced rather than decorated: a tick beside
+                   "05" needs somewhere to live on a row that is already three
+                   columns, and the number of an episode you have finished is
+                   the part you no longer need. -->
+              <span class="num" class:seen={seen === 1}>
+                {#if seen === 1}
+                  <Icon name="check" size={14} />
+                  <span class="sr-only">Watched · Episode {episode.number}</span>
+                {:else}
+                  {String(episode.number).padStart(2, "0")}
+                {/if}
+              </span>
               <!-- The badge belongs to the title, so it travels with it. Pushed
                    to the far edge it ended up hundreds of pixels from the words
                    it qualifies, and the eye had to cross the row twice. -->
@@ -199,6 +288,21 @@
                 {#if episode.subtitles.length > 0}<span class="sub">SUB</span>{/if}
               </span>
               <span class="go"><Icon name="play" size={13} /></span>
+              <!-- Only for an episode part way through. A finished one carries
+                   its tick and an untouched one has nothing to say, so a bar on
+                   either would be a row of full and empty rails saying what the
+                   left-hand column already says. -->
+              {#if seen !== null && seen < 1}
+                <span
+                  class="seen-bar"
+                  style="--seen: {seen * 100}%"
+                  role="progressbar"
+                  aria-valuenow={Math.round(seen * 100)}
+                  aria-valuemin="0"
+                  aria-valuemax="100"
+                  aria-label="Watched"
+                ></span>
+              {/if}
             </button>
           </li>
         {/each}
@@ -354,6 +458,35 @@
     background: #ffffffe6;
   }
 
+  /* Baseline-aligned rather than centred: the two buttons are different
+     heights, and centring them put the smaller one's text off the line the
+     rest of the column sits on. */
+  .actions {
+    display: flex;
+    align-items: baseline;
+    flex-wrap: wrap;
+    gap: var(--space-lg);
+  }
+
+  /* Quiet on purpose. Starting again is the rarer of the two — nobody opens a
+     part-watched series meaning to go back to the beginning — and given the
+     same weight as Resume it would be a coin toss at a glance which was which. */
+  .again {
+    margin-top: var(--space-xl);
+    padding: var(--space-sm) 0;
+    color: var(--text-3);
+    font-size: var(--t-meta);
+    text-decoration: underline;
+    text-underline-offset: 3px;
+    text-decoration-color: var(--line-strong);
+    transition: color var(--dur-fast) var(--ease-out);
+  }
+
+  .again:hover {
+    color: var(--text);
+    text-decoration-color: currentColor;
+  }
+
   /* The one surface both lists share. Bare rows on the page were a table with
      the table taken away — nothing said where the list started or ended, and
      next to a player made of floating panels the detail page read as a
@@ -448,6 +581,10 @@
   }
 
   .episodes button {
+    /* The anchor for the watched bar, which sits along the row's bottom edge
+       rather than in the flow: as a fourth column it would take width from the
+       title on every row that had one. */
+    position: relative;
     display: flex;
     align-items: center;
     gap: 1.1rem;
@@ -490,6 +627,33 @@
     font-variant-numeric: tabular-nums;
     font-size: var(--t-meta);
     letter-spacing: 0.05em;
+    /* Fixed, because the tick that replaces the number is not the same width
+       as two digits: without it every finished episode shifted its own title
+       sideways, and a list half watched read as a ragged left edge. */
+    min-width: 2ch;
+    display: inline-flex;
+    justify-content: center;
+  }
+
+  .num.seen {
+    color: var(--on);
+  }
+
+  /* Along the bottom edge of the row, inside it. A bar in the flow would be a
+     fourth column stealing width from the title on every row that had one. */
+  .seen-bar {
+    position: absolute;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    height: 2px;
+    border-radius: var(--radius-pill);
+    background: linear-gradient(
+      to right,
+      var(--on) 0,
+      var(--on) var(--seen),
+      transparent var(--seen)
+    );
   }
 
   .name {

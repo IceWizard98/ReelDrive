@@ -192,7 +192,10 @@ describe("opening a title", () => {
     home({}, { onopen });
     await fireEvent.click(screen.getByText("Dune"));
 
-    expect(onopen).toHaveBeenCalledWith(expect.objectContaining({ id: "Dune (2021)" }));
+    expect(onopen).toHaveBeenCalledWith(
+      expect.objectContaining({ id: "Dune (2021)" }),
+      expect.any(String),
+    );
   });
 });
 
@@ -241,5 +244,172 @@ describe("a title that is opening", () => {
     const { container } = home();
     expect(container.querySelector(".grid-pending")).toBeNull();
     expect(container.querySelector("button.tile.pending")).toBeNull();
+  });
+});
+
+describe("the continue watching row", () => {
+  const mark = (at, seconds = 100, duration = 1000, done = false) => ({
+    seconds,
+    duration,
+    done,
+    at,
+  });
+
+  const watching = (progress, props = {}) => home({}, { progress, ...props });
+
+  it("stays away until something has been watched", () => {
+    watching({});
+    expect(headings()).toEqual(["Series", "Movies"]);
+  });
+
+  it("comes first, above the library it is drawn from", () => {
+    watching({ "Scrubs/S01/e1.mkv": mark(10) });
+    expect(headings()).toEqual(["Continue", "Series", "Movies"]);
+  });
+
+  it("puts the most recently watched title at the front", () => {
+    watching({
+      "Scrubs/S01/e1.mkv": mark(10),
+      "Dune (2021)/Dune.mkv": mark(90),
+      "Inception (2010)/Inception.mkv": mark(50),
+    });
+    const row = screen.getAllByRole("heading", { level: 2 })[0].parentElement;
+    const titles = [...row.querySelectorAll(".title")].map((t) => t.textContent);
+    expect(titles).toEqual(["Dune", "Inception", "Scrubs"]);
+  });
+
+  it("takes a mark under a title's folder, not one that merely starts like it", () => {
+    // `Scrubs` and `Scrubs 2` are two shows on one stick, and matching the
+    // bare name would give the first one the history of the second.
+    watching({ "Scrubs 2/S01/e1.mkv": mark(10) });
+    expect(headings()).toEqual(["Series", "Movies"]);
+  });
+
+  it("counts a title by its latest episode, not its first", () => {
+    watching({
+      "Scrubs/S01/e1.mkv": mark(10, 1000, 1000, true),
+      "Scrubs/S01/e2.mkv": mark(99, 250, 1000),
+    });
+    const bar = document.querySelector('[data-row="Continue watching"] .watched');
+    expect(bar.getAttribute("style")).toContain("25%");
+  });
+
+  it("goes away when the user narrows the library themselves", () => {
+    // A search or a type filter is the user saying what they want on screen.
+    // A row of something else above it, in an order they did not ask for, is
+    // the app arguing with them.
+    watching({ "Scrubs/S01/e1.mkv": mark(10) }, { query: "dune" });
+    expect(headings()).toEqual(["Results"]);
+  });
+
+  it("holds no more than a dozen titles", () => {
+    // A row of everything ever started is not a row of what is being watched:
+    // it is the library again, in a worse order.
+    const many = Array.from({ length: 20 }, (_, i) => ({
+      id: `Show ${i}`,
+      title: `Show ${i}`,
+      year: 2000,
+      kind: "series",
+      cover: null,
+    }));
+    const progress = Object.fromEntries(
+      many.map((content, i) => [`${content.id}/e1.mkv`, mark(i)]),
+    );
+    home({ contents: many }, { progress });
+
+    const row = screen.getAllByRole("heading", { level: 2 })[0].parentElement;
+    expect(row.querySelectorAll(".tile")).toHaveLength(12);
+  });
+});
+
+describe("what a tile says about what has been watched", () => {
+  const mark = (seconds, duration, done = false) => ({ seconds, duration, done, at: 1 });
+
+  it("draws how far the title got", () => {
+    home({}, { progress: { "Dune (2021)/Dune.mkv": mark(250, 1000) } });
+    const tile = document.querySelector('[data-id="Dune (2021)"][data-row="Movies"]');
+    expect(tile.querySelector(".watched").getAttribute("style")).toContain("25%");
+  });
+
+  it("says it in words as well, for anyone not looking at the bar", () => {
+    home({}, { progress: { "Dune (2021)/Dune.mkv": mark(250, 1000) } });
+    expect(screen.getAllByText("25% watched").length).toBeGreaterThan(0);
+  });
+
+  it("shows a full bar for something finished, whatever second it stopped on", () => {
+    home({}, { progress: { "Dune (2021)/Dune.mkv": mark(0, 1000, true) } });
+    const tile = document.querySelector('[data-id="Dune (2021)"][data-row="Movies"]');
+    expect(tile.querySelector(".watched").getAttribute("style")).toContain("100%");
+    expect(screen.getAllByText("Watched").length).toBeGreaterThan(0);
+  });
+
+  it("still shows a mark for a title only just taken up", () => {
+    // A bar of zero width is indistinguishable from a title never opened,
+    // which is the opposite of what a zero-second mark means.
+    home({}, { progress: { "Dune (2021)/Dune.mkv": mark(0, 1000) } });
+    const tile = document.querySelector('[data-id="Dune (2021)"][data-row="Movies"]');
+    expect(tile.querySelector(".watched")).not.toBeNull();
+  });
+
+  it("draws nothing on a title nobody has opened", () => {
+    home({}, { progress: { "Dune (2021)/Dune.mkv": mark(250, 1000) } });
+    const tile = document.querySelector('[data-id="Scrubs"][data-row="Series"]');
+    expect(tile.querySelector(".watched")).toBeNull();
+  });
+
+  it("draws nothing when the length could not be measured", () => {
+    // A file ffprobe could not read. Dividing by it gives Infinity.
+    home({}, { progress: { "Dune (2021)/Dune.mkv": mark(250, 0) } });
+    const tile = document.querySelector('[data-id="Dune (2021)"][data-row="Movies"]');
+    expect(tile.querySelector(".watched")).toBeNull();
+  });
+});
+
+describe("coming back to a title that is on screen twice", () => {
+  it("puts the focus on the copy it was opened from", async () => {
+    // Started titles appear both in "continue watching" and in their own
+    // group. Matching on the id alone put the ring on whichever copy the
+    // document happened to hold first, which is never the one clicked.
+    home(
+      {},
+      {
+        progress: { "Scrubs/S01/e1.mkv": { seconds: 100, duration: 1000, done: false, at: 5 } },
+        focusId: "Scrubs",
+        focusRow: "Series",
+      },
+    );
+
+    expect(document.activeElement.getAttribute("data-row")).toBe("Series");
+  });
+
+  it("falls back to the other copy when that section is gone", async () => {
+    // Finishing the last episode takes a series out of "continue watching",
+    // and the tile to come back to is the one in "Series".
+    home({}, { focusId: "Scrubs", focusRow: "Continue watching" });
+    expect(document.activeElement.getAttribute("data-id")).toBe("Scrubs");
+    expect(document.activeElement.getAttribute("data-row")).toBe("Series");
+  });
+});
+
+describe("two marks landing in the same second", () => {
+  it("counts the episode taken up, not the one just finished", async () => {
+    // Autoplay records the finished episode and dates the next one within a
+    // second of each other, and `at` is whole seconds. Reading the tie the
+    // other way leaves a series the viewer is now one episode into showing a
+    // full bar and the word "Watched" — for the whole of the next episode's
+    // first fifteen seconds, and for good if they stop inside it.
+    home(
+      {},
+      {
+        progress: {
+          "Scrubs/S01/e1.mkv": { seconds: 0, duration: 1000, done: true, at: 42 },
+          "Scrubs/S01/e2.mkv": { seconds: 0, duration: 1000, done: false, at: 42 },
+        },
+      },
+    );
+
+    const tile = document.querySelector('[data-id="Scrubs"][data-row="Series"]');
+    expect(tile.querySelector(".watched").getAttribute("style")).toContain("2%");
+    expect(screen.queryByText("Watched")).toBeNull();
   });
 });

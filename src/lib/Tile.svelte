@@ -15,7 +15,24 @@
 <script>
   import { fileUrl, initials, placeholderStyle } from "./api.js";
 
-  let { content, mediaRoot, onopen, index = 0, pending = false } = $props();
+  let {
+    content,
+    mediaRoot,
+    onopen,
+    index = 0,
+    pending = false,
+    // How much of what is being watched here has been watched, 0 to 1, or
+    // `null` for a title nobody has opened. For a series this is the progress
+    // of the episode that would be resumed, not of the series — see `Home`.
+    watched = null,
+    // What that progress refers to, in words, for anyone who cannot see a bar.
+    watchedLabel = "",
+    // Which section of the grid this tile is in. A title can appear twice —
+    // once under "Continue watching" and once in its own group — and the two
+    // copies have to be told apart by the focus that is put back after a title
+    // closes, or coming out of a series always lands on the top row.
+    row = "",
+  } = $props();
 
   const animate = !entered;
   $effect(() => {
@@ -37,8 +54,9 @@
   class:pending
   aria-busy={pending}
   data-id={content.id}
+  data-row={row}
   style="--enter-delay: {Math.min(index, 8) * 28}ms"
-  onclick={() => onopen(content)}
+  onclick={() => onopen(content, row)}
 >
   <span class="frame">
     {#if src && !failed}
@@ -48,7 +66,18 @@
         <span>{initials(content.title)}</span>
       </span>
     {/if}
+    <!-- On the poster rather than under it: the caption rows are shared tracks
+         across the whole grid row, so a bar down there would open a fourth
+         track on every tile in the row to serve the one that had it. -->
+    {#if watched !== null}
+      <span class="watched" style="--watched: {Math.max(watched, 0.02) * 100}%"></span>
+    {/if}
   </span>
+  {#if watchedLabel}
+    <!-- The bar is the whole of the information for anyone looking at it, and
+         none of it for anyone who is not. -->
+    <span class="sr-only">{watchedLabel}</span>
+  {/if}
 
   <span class="title">{content.title}</span>
   <span class="year">{content.year ?? ""}</span>
@@ -113,8 +142,32 @@
   }
 
   .frame {
+    /* The anchor for the watched bar, which is laid over the bottom of the
+       poster. */
+    position: relative;
     display: block;
     transition: transform var(--dur) var(--ease-out);
+  }
+
+  /* Across the foot of the poster, over the picture. A minimum of 2% so that a
+     title just taken up still shows a mark: a bar of zero width is
+     indistinguishable from a title never opened, which is the opposite of what
+     it means. */
+  .watched {
+    position: absolute;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    height: 3px;
+    border-radius: 0 0 var(--radius-md) var(--radius-md);
+    /* The unwatched part is dark rather than transparent: over a bright poster
+       a half-full bar with a see-through tail reads as a full one. */
+    background: linear-gradient(
+      to right,
+      var(--on) 0,
+      var(--on) var(--watched),
+      #000000a6 var(--watched)
+    );
   }
 
   .tile:hover .frame,

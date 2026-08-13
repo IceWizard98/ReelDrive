@@ -81,6 +81,27 @@ export const stopStream = () => invoke("stop_playback");
 /// say anything more useful than "it broke".
 export const playbackFailure = () => invoke("playback_failure");
 
+/// Everything that has been watched, as a map of media-relative path to
+/// `{ seconds, duration, done, at }`. Fetched once beside the library: it is a
+/// few hundred short rows at most, and the alternative is a round trip per tile.
+export const getProgress = () => invoke("progress");
+
+/// Remember where a file got to. Answers with the mark that was stored, or
+/// `null` when the backend decided the position was not worth keeping — a few
+/// seconds in is not a position, and that rule lives in one place.
+export const recordProgress = (path, seconds, duration) =>
+  invoke("record_progress", { path, seconds, duration });
+
+/// Put a file at the head of the history without claiming any of it was
+/// watched. What the end of an episode does to the one after it, so a series
+/// does not leave "continue watching" during the first seconds of every episode.
+export const takeUp = (path, duration) => invoke("take_up", { path, duration });
+
+/// The episode to play now for one title: the first one not finished, seasons
+/// walked in order, so the end of a season leads into the next one. `null` once
+/// everything has been watched.
+export const getUpNext = (id) => invoke("up_next", { id });
+
 /// Open the author's site in the user's own browser. The address lives in the
 /// backend and is not a parameter: a command that takes a URL and hands it to
 /// the shell opens whatever it is asked to.
@@ -99,6 +120,22 @@ export function placeholderStyle(title) {
   let hash = 0;
   for (const char of title) hash = (hash * 31 + char.codePointAt(0)) % 360;
   return `--tile-hue: ${hash}`;
+}
+
+/// Seconds as a clock: `4:07`, `1:23:45`. Minutes are padded only under an
+/// hour's worth, so a film reads `1:05:00` and an episode `5:00`.
+///
+/// Here rather than in the player because the detail page prints a resume
+/// position with it, and two spellings of the same time on two screens of the
+/// same app is the kind of difference nobody can explain afterwards.
+export function clock(seconds) {
+  if (!Number.isFinite(seconds) || seconds < 0) return "0:00";
+  const whole = Math.floor(seconds);
+  const h = Math.floor(whole / 3600);
+  const m = Math.floor((whole % 3600) / 60);
+  const s = whole % 60;
+  const mm = h > 0 ? String(m).padStart(2, "0") : String(m);
+  return `${h > 0 ? `${h}:` : ""}${mm}:${String(s).padStart(2, "0")}`;
 }
 
 export function initials(title) {

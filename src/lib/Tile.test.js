@@ -64,6 +64,25 @@ describe("opening", () => {
     render(Tile, { props: { content: content(), mediaRoot: "/mnt/usb/media", onopen, index: 0 } });
     await fireEvent.click(screen.getByRole("button"));
 
-    expect(onopen).toHaveBeenCalledWith(expect.objectContaining({ id: "Dune (2021)" }));
+    expect(onopen).toHaveBeenCalledWith(expect.objectContaining({ id: "Dune (2021)" }), "");
+  });
+
+  it("says which section it was in, so the way back lands on this copy", async () => {
+    // The same title is on screen twice once it has been started: here and in
+    // its own group. Without the section, coming out of it always put the
+    // focus ring on whichever copy the document happened to hold first.
+    const onopen = vi.fn();
+    render(Tile, {
+      props: {
+        content: content(),
+        mediaRoot: "/mnt/usb/media",
+        onopen,
+        index: 0,
+        row: "Continue watching",
+      },
+    });
+    await fireEvent.click(screen.getByRole("button"));
+
+    expect(onopen).toHaveBeenCalledWith(expect.anything(), "Continue watching");
   });
 });

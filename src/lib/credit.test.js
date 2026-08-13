@@ -3,12 +3,20 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import App from "../App.svelte";
 
 // The whole bridge, so the app can be mounted without Tauri underneath it.
-vi.mock("./api.js", () => ({
+// The pure formatters come through as themselves: they touch nothing outside
+// this module, and a second copy written here would let the two drift while
+// every test went on passing.
+vi.mock("./api.js", async (importOriginal) => ({
+  clock: (await importOriginal()).clock,
   getLibrary: vi.fn(),
   getContent: vi.fn(),
   getPlaybackSource: vi.fn(),
   stopStream: vi.fn(),
   openAuthorSite: vi.fn(),
+  getProgress: vi.fn(),
+  getUpNext: vi.fn(),
+  recordProgress: vi.fn(),
+  takeUp: vi.fn(),
   // The player reaches for its own half of the bridge the moment it mounts,
   // and one of these tests takes the app all the way into a film.
   audioUrl: vi.fn(),
@@ -58,6 +66,10 @@ beforeEach(() => {
   api.getPlaybackSource.mockResolvedValue(SOURCE);
   api.playbackFailure.mockResolvedValue(null);
   api.isFullscreen.mockResolvedValue(false);
+  api.getProgress.mockResolvedValue({});
+  api.getUpNext.mockResolvedValue(null);
+  api.recordProgress.mockResolvedValue(null);
+  api.takeUp.mockResolvedValue(null);
 });
 
 describe("the credit", () => {

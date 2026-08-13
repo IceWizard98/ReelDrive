@@ -2,6 +2,7 @@
   import { tick } from "svelte";
   import {
     audioUrl,
+    clock,
     fallbackUrl,
     isFullscreen,
     playbackFailure,
@@ -11,7 +12,35 @@
   } from "./api.js";
   import Icon from "./Icon.svelte";
 
-  let { source, relativePath, onexit } = $props();
+  let {
+    source,
+    relativePath,
+    onexit,
+    // Second of the film to open at. Not passed to the backend as a start
+    // offset on purpose: asking for a stream that begins midway turns a file
+    // the platform plays untouched into a repackaged one, so a direct file
+    // would spawn an ffmpeg to resume something it could simply seek. Handled
+    // here instead, through the seek path that already exists — which is also
+    // the path that knows when a restart really is needed.
+    startAt = 0,
+    // Where the film has got to, for whoever wants to remember it. Reported
+    // rather than saved here: this component knows the clock, not the stick.
+    // Not `onprogress`: the element already has one of those, and it is about
+    // how much has downloaded.
+    //
+    // It names its own file, and that is not redundant. The parting report goes
+    // out as this component is destroyed, which on the way into the next
+    // episode happens after the caller already holds the *new* file — and a
+    // caller reading the path from its own state would file a finished
+    // episode's position against an episode nobody has watched, marking it seen
+    // and skipping it. That it currently survives is an accident of the order
+    // Svelte tears things down in, which is not a thing to depend on.
+    onposition = () => {},
+    // The film reached its end, as opposed to any other way out of the player.
+    // Separate from `onexit` because only one of the two can lead into the next
+    // episode.
+    onfinished = null,
+  } = $props();
 
   let video = $state(null);
   let stage = $state(null);
@@ -24,7 +53,15 @@
   // it, and it begins at the second the session was asked for: `offset` is
   // where that is in the real film. Seeking inside what has been produced is
   // the element's own job; past it, a new session has to start there.
-  let offset = $state(0);
+  //
+  // Seeded from the stream the backend actually built, not from zero. Today
+  // nothing asks `playback_source` to start midway, so this is always zero on
+  // arrival — but the field is handed over precisely so the player need not
+  // assume its request was honoured verbatim, and ignoring it meant every
+  // position this component reports would be wrong by the offset the day
+  // anything did ask.
+  // svelte-ignore state_referenced_locally
+  let offset = $state(source.offset ?? 0);
   let currentTime = $state(0);
   let paused = $state(false);
   let volume = $state(1);
@@ -183,6 +220,55 @@
     if (video) attach(source.url);
   });
 
+  // Resuming happens once, on the first stream this player attaches — never
+  // again. `seekTo` is reached through the element's own metadata event because
+  // a direct file cannot be seeked before it knows how long it is; a converted
+  // one is already positioned by its offset and needs nothing. Guarded by a
+  // flag rather than by comparing positions: after the seek the film is at
+  // `startAt`, and anything that compared the two would resume again on the
+  // next `loadedmetadata` — which every stream restart fires.
+  // Read once, like the four pieces of state seeded from `source` above and for
+  // the same reason: a new film arrives as a new player, so where to resume it
+  // is settled at creation and never changes under this component.
+  // svelte-ignore state_referenced_locally
+  let resumed = startAt <= 0;
+  function resumeOnce() {
+    if (resumed) return;
+    resumed = true;
+    // Landing within a second of the end would start a film on its credits and
+    // immediately end it, which with autoplay on is an episode skipped.
+    if (duration && startAt >= duration - 1) return;
+    if (startAt > offset) seekTo(startAt);
+  }
+
+  /// The film's position, for whoever is remembering it.
+  ///
+  /// `position` is `offset + currentTime`: a restarted stream's element clock
+  /// runs from where that stream began, not from where the film does, so the
+  /// element's own `currentTime` is the wrong number to hand out.
+  ///
+  /// Sent on pause and on the way out, and otherwise no more than once every
+  /// twenty seconds — `timeupdate` fires four times a second, and each of these
+  /// is a write to a stick.
+  let lastReport = 0;
+  const REPORT_EVERY = 20;
+  function report(force = false) {
+    // A film still waiting for its first frame reports zero, which as a
+    // remembered position means "start again from the beginning".
+    if (!duration || buffering) return;
+    if (!force && Math.abs(position - lastReport) < REPORT_EVERY) return;
+    lastReport = position;
+    onposition(relativePath, position, duration);
+  }
+
+  // The last word on where the film got to, whichever way the player was left.
+  //
+  // One place rather than one call beside every exit: Escape, the back button,
+  // the error screen's own button and the end of the film all finish as this
+  // component being unmounted, and a position saved on three of the four routes
+  // is a feature that loses your place depending on how you left.
+  $effect(() => () => report(true));
+
   /// Whether the element can reach `target` on its own.
   ///
   /// An untouched file is the whole film with byte ranges behind it, so
@@ -246,16 +332,6 @@
     hls?.destroy();
     hls = null;
   });
-
-  function clock(seconds) {
-    if (!Number.isFinite(seconds) || seconds < 0) return "0:00";
-    const whole = Math.floor(seconds);
-    const h = Math.floor(whole / 3600);
-    const m = Math.floor((whole % 3600) / 60);
-    const s = whole % 60;
-    const mm = h > 0 ? String(m).padStart(2, "0") : String(m);
-    return `${h > 0 ? `${h}:` : ""}${mm}:${String(s).padStart(2, "0")}`;
-  }
 
   function toggleMenu(name) {
     menu = menu === name ? null : name;
@@ -691,7 +767,10 @@
   function onEnded() {
     // With a restarted stream the element ends at the end of *its* piece, which
     // is the end of the film only if it started at the beginning.
-    if (delivery === "direct" || offset + currentTime >= duration - 1) onexit();
+    if (delivery !== "direct" && offset + currentTime < duration - 1) return;
+    // Told apart from every other way out, because this is the only one that
+    // may lead into the next episode. Without a handler it is still an exit.
+    (onfinished ?? onexit)();
   }
 </script>
 
@@ -720,10 +799,11 @@
     bind:this={video}
     autoplay
     crossorigin="anonymous"
-    ontimeupdate={() => (currentTime = video?.currentTime ?? 0)}
+    ontimeupdate={() => ((currentTime = video?.currentTime ?? 0), report())}
     onprogress={onProgress}
+    onloadedmetadata={resumeOnce}
     onplay={() => ((paused = false), (buffering = false), show())}
-    onpause={() => ((paused = true), show())}
+    onpause={() => ((paused = true), show(), report(true))}
     onwaiting={() => (buffering = true)}
     onplaying={() => ((buffering = false), onProgress())}
     onended={onEnded}
