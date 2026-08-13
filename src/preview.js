@@ -63,11 +63,15 @@ const CONTENTS = [
   { id: "Whiplash (2014)", title: "Whiplash", year: 2014, kind: "movie", cover: cover("Whiplash (2014)", "WHIPLASH", "#5c4409", "#1a1303") },
 ];
 
-const episode = (number, title, subs = 0) => ({
+// The folder is part of it because the watch history is keyed by path: with
+// one path shared by every series, watching an episode of The Bear marked the
+// same-numbered episode of Scrubs, and the home row showed progress against a
+// show nobody had opened.
+const episode = (number, title, subs = 0, folder = "Scrubs/Season 1") => ({
   number,
   title,
-  file: `Scrubs/Season 1/S01E${String(number).padStart(2, "0")}.mkv`,
-  subtitles: subs ? ["Scrubs/Season 1/sub.srt"] : [],
+  file: `${folder}/S${String(number).padStart(2, "0")}.mkv`,
+  subtitles: subs ? [`${folder}/sub.srt`] : [],
 });
 
 const find = (id) => CONTENTS.find((content) => content.id === id);
@@ -78,7 +82,11 @@ const DETAILS = {
     body: {
       kind: "series",
       seasons: [
-        { number: 0, title: "Specials", episodes: [episode(1, "Behind the scenes")] },
+        {
+          number: 0,
+          title: "Specials",
+          episodes: [episode(1, "Behind the scenes", 0, "Scrubs/Specials")],
+        },
         {
           number: 1,
           title: "Season 1 - Il principio",
@@ -93,7 +101,14 @@ const DETAILS = {
             episode(8, "My Fifteen Minutes"),
           ],
         },
-        { number: 2, title: "", episodes: [episode(1, "My Overkill"), episode(2, "My Nightingale")] },
+        {
+          number: 2,
+          title: "",
+          episodes: [
+            episode(1, "My Overkill", 0, "Scrubs/Season 2"),
+            episode(2, "My Nightingale", 0, "Scrubs/Season 2"),
+          ],
+        },
       ],
     },
   },
@@ -113,7 +128,11 @@ const DETAILS = {
         {
           number: 1,
           title: "",
-          episodes: [episode(1, "System"), episode(2, "Hands"), episode(3, "Brigade")],
+          episodes: [
+            episode(1, "System", 0, "The Bear/Season 1"),
+            episode(2, "Hands", 0, "The Bear/Season 1"),
+            episode(3, "Brigade", 0, "The Bear/Season 1"),
+          ],
         },
       ],
     },
@@ -126,6 +145,105 @@ const LIBRARY = {
   contents: CONTENTS,
   warnings: ['“Notes” contains no video', '“To watch” contains no video'],
 };
+
+// A watch history, in memory and alive for the length of the session: the row
+// on the home screen, the bars on the posters and the resume button are only
+// worth looking at if they answer to what you actually do in the harness.
+//
+// Seeded so the first screen shows the thing being reviewed — a film part way
+// through, a series between two seasons, and one finished — rather than the
+// empty state the row has by design.
+const HISTORY = {
+  // A film stopped part way: a bar under half, and a Resume carrying a time.
+  "Inception (2010)/Inception.mkv": { seconds: 1402, duration: 8880, done: false, at: 300 },
+  // A series with its first season finished, so the button on it has to name
+  // an episode in a season the tabs are not showing.
+  "Scrubs/Season 1/S01.mkv": { seconds: 0, duration: 1320, done: true, at: 100 },
+  "Scrubs/Season 1/S02.mkv": { seconds: 0, duration: 1320, done: true, at: 110 },
+  "Scrubs/Season 1/S03.mkv": { seconds: 0, duration: 1320, done: true, at: 120 },
+  "Scrubs/Season 1/S04.mkv": { seconds: 0, duration: 1320, done: true, at: 130 },
+  "Scrubs/Season 1/S05.mkv": { seconds: 0, duration: 1320, done: true, at: 140 },
+  "Scrubs/Season 1/S06.mkv": { seconds: 0, duration: 1320, done: true, at: 150 },
+  "Scrubs/Season 1/S07.mkv": { seconds: 0, duration: 1320, done: true, at: 160 },
+  "Scrubs/Season 1/S08.mkv": { seconds: 0, duration: 1320, done: true, at: 170 },
+  // One episode in, so the tick and the part-watched rail are both on screen
+  // in the same list.
+  "The Bear/Season 1/S01.mkv": { seconds: 0, duration: 1800, done: true, at: 200 },
+  "The Bear/Season 1/S02.mkv": { seconds: 610, duration: 1800, done: false, at: 250 },
+};
+
+// The same three rules the backend applies, and the reason they are repeated
+// here rather than imported: this file stands in for the backend, and a stub
+// that quietly disagrees with it is a harness showing a screen the app will
+// never draw. See `core/progress.rs`.
+const MIN_SECONDS = 15;
+const MIN_FRACTION = 0.05;
+const DONE_FRACTION = 0.95;
+const CREDITS_SECONDS = 120;
+const MIN_DONE_FRACTION = 0.8;
+
+// Whichever allowance is kinder, floored so a short file cannot be finished
+// before most of it has gone by. The backend's `finished_at`.
+const finishedAt = (duration) =>
+  Math.max(
+    duration * MIN_DONE_FRACTION,
+    Math.min(duration - CREDITS_SECONDS, duration * DONE_FRACTION),
+  );
+
+// Numbers a player could actually have produced, the backend's `is_believable`.
+// An element that has not loaded reports a `currentTime` of NaN, and NaN fails
+// every comparison, so a plain range check waves it through and the harness
+// draws a bar of no length against a mark the real app refuses to store.
+const believable = (seconds, duration) =>
+  Number.isFinite(seconds) && Number.isFinite(duration) && seconds >= 0 && duration > 0 && seconds <= duration;
+
+function record(path, seconds, duration) {
+  if (!believable(seconds, duration)) return null;
+  const done = seconds >= finishedAt(duration);
+  if (seconds < Math.min(MIN_SECONDS, duration * MIN_FRACTION) && !done) return null;
+  const mark = { seconds: done ? 0 : seconds, duration, done, at: Date.now() / 1000 };
+  HISTORY[path] = mark;
+  return mark;
+}
+
+/// The first episode not finished, seasons in order — extras last, and skipped
+/// unless they are all there is.
+function upNext(id) {
+  const detail = DETAILS[id];
+  if (!detail) return null;
+  if (detail.body.kind === "movie") {
+    const mark = HISTORY[detail.body.file];
+    return {
+      file: detail.body.file,
+      subtitles: detail.body.subtitles ?? [],
+      season: null,
+      episode: null,
+      title: detail.summary.title,
+      seconds: mark && !mark.done ? mark.seconds : 0,
+      fresh: !mark,
+    };
+  }
+  const seasons = [...detail.body.seasons].sort((a, b) => a.number - b.number);
+  const onlyExtras = seasons.every((season) => season.number === 0);
+  const episodes = seasons
+    .filter((season) => onlyExtras || season.number !== 0)
+    .flatMap((season) => (season.episodes ?? []).map((episode) => ({ season, episode })));
+  // Over every season, extras included: having watched a special is having
+  // opened the series, so the button says Resume as it does in the backend.
+  const fresh = !seasons.some((season) => (season.episodes ?? []).some((episode) => HISTORY[episode.file]));
+  const found = episodes.find(({ episode }) => !HISTORY[episode.file]?.done);
+  if (!found) return null;
+  const mark = HISTORY[found.episode.file];
+  return {
+    file: found.episode.file,
+    subtitles: found.episode.subtitles ?? [],
+    season: found.season.number,
+    episode: found.episode.number,
+    title: found.episode.title,
+    seconds: mark && !mark.done ? mark.seconds : 0,
+    fresh,
+  };
+}
 
 // The two entry points @tauri-apps/api goes through.
 window.__TAURI_INTERNALS__ = {
@@ -187,6 +305,18 @@ window.__TAURI_INTERNALS__ = {
       // asks on every dead end and falls back to its own sentence.
       case "playback_failure":
         return null;
+      case "progress":
+        return { ...HISTORY };
+      case "record_progress":
+        return record(args.path, args.seconds, args.duration);
+      // Dates a file without claiming any of it was watched, so a series does
+      // not leave the home row during the first seconds of an episode.
+      case "take_up":
+        if (HISTORY[args.path] || !believable(0, args.duration)) return null;
+        HISTORY[args.path] = { seconds: 0, duration: args.duration, done: false, at: Date.now() / 1000 };
+        return HISTORY[args.path];
+      case "up_next":
+        return upNext(args.id);
       // The harness runs in a browser, where there is no shell to hand a URL
       // to, so the nearest thing is a tab. A blocked popup comes back as null,
       // and reporting that is the only way the harness ever shows the footer's
