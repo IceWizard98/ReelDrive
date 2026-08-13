@@ -873,14 +873,14 @@ mod tests {
     fn a_playlist_is_written_into_the_session_directory() {
         let dir = Path::new("/tmp/session");
         let args = hls_args(Path::new("/m/a.mkv"), Delivery::Remux, 0.0, None, 0, dir);
-        assert_eq!(
-            args.last().map(String::as_str),
-            Some("/tmp/session/index.m3u8"),
-            "{args:?}"
-        );
+        // Spelled through `join`, not written out: Windows separates with `\`,
+        // and a literal `/tmp/session/index.m3u8` fails there on the separator
+        // while saying the playlist landed outside the session directory.
+        let in_dir = |name: &str| dir.join(name).to_string_lossy().into_owned();
+        assert_eq!(args.last(), Some(&in_dir("index.m3u8")), "{args:?}");
         assert!(
             args.windows(2)
-                .any(|w| w == ["-hls_segment_filename", "/tmp/session/seg%05d.m4s"]),
+                .any(|w| w == ["-hls_segment_filename", &in_dir("seg%05d.m4s")]),
             "{args:?}"
         );
     }
