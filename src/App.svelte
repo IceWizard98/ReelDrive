@@ -16,6 +16,7 @@
     stopStream,
     takeUp,
   } from "./lib/api.js";
+  import { versionLabel } from "./lib/version.js";
 
   let library = $state(null);
   let detail = $state(null);
@@ -390,6 +391,8 @@
        somebody wonders what this is and who wrote it — and it has no business
        over a picture. -->
   <footer>
+    <span class="version">{versionLabel(import.meta.env.VITE_REELDRIVE_VERSION)}</span>
+    <span aria-hidden="true">·</span>
     Made by
     <button onclick={openCredit}>Luis Enriquez</button>
     <span aria-hidden="true">·</span>
@@ -542,6 +545,12 @@
      the browser may not open — and an address you can read is one you can type
      somewhere else. */
   .site {
+    font-variant-numeric: tabular-nums;
+  }
+
+  /* Same weight as the address beside it: both are things to read off the
+     screen and repeat somewhere else — a bug report, in this one's case. */
+  .version {
     font-variant-numeric: tabular-nums;
   }
 

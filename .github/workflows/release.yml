@@ -29,6 +29,11 @@ jobs:
       # a cache written by an earlier one is thrown away rather than read back
       # into a shape that may no longer mean the same thing.
       REELDRIVE_BUILD: ${{ github.run_number }}
+      # Shown in the footer. The tag is the only place a release number is
+      # written, so nothing in the tree has to be bumped by hand — and a run
+      # that is not attached to a tag leaves it empty, which the build fills
+      # from `git describe`: the commit, not a release it is not.
+      VITE_REELDRIVE_VERSION: ${{ github.event.release.tag_name || inputs.tag }}
     strategy:
       fail-fast: false
       matrix:
@@ -172,6 +177,21 @@ jobs:
         run: Compress-Archive -Path out\* -DestinationPath "${{ matrix.artifact }}" -Force
 
       # --- publish ----------------------------------------------------------
+
+      # The same failure the build-number check exists for, one layer up: Vite
+      # only forwards names starting with `VITE_`, so a rename of the variable
+      # above would ship every release footer reading "dev" and nothing else
+      # would notice.
+      - name: Check the version reached the bundle
+        if: env.VITE_REELDRIVE_VERSION != ''
+        shell: bash
+        run: |
+          # -F, because a tag is not a pattern: `0.3.1` as a regexp matches
+          # `192,0` and `1:210` in the minified bundle, so without it the check
+          # passes on a build the version never reached — which is the one case
+          # it exists for.
+          grep -qrF -- "\"$VITE_REELDRIVE_VERSION\"" dist/assets \
+            || { echo "::error::the frontend does not carry version $VITE_REELDRIVE_VERSION"; exit 1; }
 
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:

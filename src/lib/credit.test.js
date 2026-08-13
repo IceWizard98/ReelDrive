@@ -1,5 +1,5 @@
 import { render, screen, fireEvent, waitFor } from "@testing-library/svelte";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import App from "../App.svelte";
 
 // The whole bridge, so the app can be mounted without Tauri underneath it.
@@ -135,5 +135,57 @@ describe("the credit", () => {
     render(App);
     await screen.findByText(/Content folder missing/);
     expect(screen.getByRole("button", { name: "Luis Enriquez" })).toBeInTheDocument();
+  });
+});
+
+describe("the version", () => {
+  // Every case states the variable, including the one that wants it absent: the
+  // release workflow exports it for the whole job, so the suite itself runs
+  // with a tag in the environment and a test that just reads what is there
+  // would fail on exactly the builds that matter. Unstubbed here rather than at
+  // the end of each test, so a failing assertion cannot leak a tag into the
+  // next one.
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  it("says dev when no release stamped one in", async () => {
+    // A build off a laptop is not a release and must not read like one.
+    vi.stubEnv("VITE_REELDRIVE_VERSION", undefined);
+    render(App);
+    await screen.findByRole("button", { name: "Luis Enriquez" });
+    expect(screen.getByText("dev")).toBeInTheDocument();
+  });
+
+  it("says dev when the tag came through empty", async () => {
+    // A dispatch with no tag leaves the variable set and empty, which is not
+    // the same input as an absent one.
+    vi.stubEnv("VITE_REELDRIVE_VERSION", "");
+    render(App);
+    await screen.findByRole("button", { name: "Luis Enriquez" });
+    expect(screen.getByText("dev")).toBeInTheDocument();
+  });
+
+  it("shows the tag the release was built from", async () => {
+    vi.stubEnv("VITE_REELDRIVE_VERSION", "v1.2.0");
+    render(App);
+    await screen.findByRole("button", { name: "Luis Enriquez" });
+    expect(screen.getByText("v1.2.0")).toBeInTheDocument();
+  });
+
+  it("prefixes a bare number, so the footer never reads as a date", async () => {
+    vi.stubEnv("VITE_REELDRIVE_VERSION", "0.3.1");
+    render(App);
+    await screen.findByRole("button", { name: "Luis Enriquez" });
+    expect(screen.getByText("v0.3.1")).toBeInTheDocument();
+  });
+
+  it("stands before the credit", async () => {
+    // Asked for explicitly: the number is what the line opens with, and the
+    // name follows it.
+    vi.stubEnv("VITE_REELDRIVE_VERSION", "v1.2.0");
+    render(App);
+    const footer = (await screen.findByRole("button", { name: "Luis Enriquez" })).closest("footer");
+    expect(footer.textContent.replace(/\s+/g, " ")).toMatch(/v1\.2\.0 · Made by Luis Enriquez/);
   });
 });
