@@ -53,7 +53,7 @@ struct HlsSession {
     /// conversion that gave up halfway became a picture that simply stopped:
     /// the playlist stopped growing, the element sat on its last frame, and
     /// the one sentence explaining why went to /dev/null.
-    said: Arc<Mutex<String>>,
+    said: Complaint,
 }
 
 /// The only place a session is torn down, so no path can forget half of it.
@@ -81,20 +81,79 @@ fn locked(session: &Session) -> std::sync::MutexGuard<'_, Option<HlsSession>> {
 /// there so a process that decides to shout cannot grow the buffer for ever.
 const STDERR_KEPT: usize = 4096;
 
+/// What ffmpeg said, and whether there is any more of it coming.
+///
+/// Two things that have to be read together. A process can be reaped before the
+/// thread reading its pipe has been scheduled even once, and then the buffer is
+/// empty for a conversion that explained itself perfectly well.
+#[derive(Clone)]
+struct Complaint {
+    said: Arc<Mutex<String>>,
+    drained: Arc<std::sync::atomic::AtomicBool>,
+}
+
+impl Complaint {
+    fn new() -> Self {
+        Self {
+            said: Arc::new(Mutex::new(String::new())),
+            drained: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        }
+    }
+
+    fn text(&self) -> String {
+        self.said
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .trim()
+            .to_string()
+    }
+
+    /// The sentence to report for a conversion that has just been found dead.
+    ///
+    /// The wait is the whole point. `try_wait` answering `Some(status)` says the
+    /// process is gone, not that its pipe has been read: the reading thread may
+    /// not have run yet. Taking the buffer at that moment gave "The conversion
+    /// stopped early (exit status: 1)" for a film ffmpeg had named the fault in,
+    /// which is the generic sentence this project spent a release removing.
+    ///
+    /// Bounded rather than a join on the thread: this runs under the session
+    /// lock, and a pipe held open by something that outlives the child would
+    /// otherwise hold every request on the server behind it. A tenth of a second
+    /// is far longer than a scheduler needs and short enough to be invisible on
+    /// a path that has already failed.
+    fn on_death(&self, status: std::process::ExitStatus) -> String {
+        let deadline = Instant::now() + Duration::from_millis(100);
+        while !self.drained.load(std::sync::atomic::Ordering::Acquire) && Instant::now() < deadline
+        {
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        let said = self.text();
+        if said.is_empty() {
+            format!("The conversion stopped early ({status}).")
+        } else {
+            said
+        }
+    }
+}
+
 /// Drain the child's stderr into a buffer, on a thread of its own.
-fn collect_stderr(child: &mut Child) -> Arc<Mutex<String>> {
-    let said = Arc::new(Mutex::new(String::new()));
+fn collect_stderr(child: &mut Child) -> Complaint {
+    let complaint = Complaint::new();
     let Some(mut pipe) = child.stderr.take() else {
-        return said;
+        // Nothing will ever be written, so nothing is ever waited for.
+        complaint
+            .drained
+            .store(true, std::sync::atomic::Ordering::Release);
+        return complaint;
     };
-    let sink = Arc::clone(&said);
+    let sink = complaint.clone();
     std::thread::spawn(move || {
         let mut buffer = [0u8; 1024];
         loop {
             match pipe.read(&mut buffer) {
                 Ok(0) => break,
                 Ok(read) => {
-                    let mut held = sink.lock().unwrap_or_else(|e| e.into_inner());
+                    let mut held = sink.said.lock().unwrap_or_else(|e| e.into_inner());
                     if held.len() < STDERR_KEPT {
                         held.push_str(&String::from_utf8_lossy(&buffer[..read]));
                     }
@@ -103,8 +162,12 @@ fn collect_stderr(child: &mut Child) -> Arc<Mutex<String>> {
                 Err(_) => break,
             }
         }
+        // Set last, and after the lock above has been dropped every time round:
+        // a reader that sees this must find everything that was written.
+        sink.drained
+            .store(true, std::sync::atomic::Ordering::Release);
     });
-    said
+    complaint
 }
 
 /// Whether the conversion behind `id` has stopped badly, and what it said.
@@ -117,19 +180,7 @@ fn conversion_failure(session: &Session, id: &str) -> Option<String> {
     let mut guard = locked(session);
     let current = guard.as_mut().filter(|open| open.id == id)?;
     match current.child.try_wait() {
-        Ok(Some(status)) if !status.success() => {
-            let said = current
-                .said
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .trim()
-                .to_string();
-            Some(if said.is_empty() {
-                format!("The conversion stopped early ({status}).")
-            } else {
-                said
-            })
-        }
+        Ok(Some(status)) if !status.success() => Some(current.said.on_death(status)),
         // Still running, finished cleanly, or unreadable — none of them is a
         // failure to report. A conversion that ends well writes its own
         // end-of-playlist marker and the player stops asking.
@@ -551,12 +602,9 @@ fn respond_playlist(
 /// What the conversion has said so far, whether or not it has stopped.
 fn said_so_far(session: &Session, id: &str) -> String {
     match locked(session).as_ref() {
-        Some(current) if current.id == id => current
-            .said
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .trim()
-            .to_string(),
+        // No wait here, unlike `on_death`: the conversion is still running, so
+        // there is no "all of it" to wait for.
+        Some(current) if current.id == id => current.said.text(),
         _ => String::new(),
     }
 }
@@ -1580,6 +1628,68 @@ exit 1"#,
             server.last_failure().as_deref(),
             Some("Invalid data found"),
             "the one sentence explaining the failure has to survive the request"
+        );
+    }
+
+    /// A process that has already been reaped whose pipe has not been read yet.
+    fn a_failed_status() -> std::process::ExitStatus {
+        ffmpeg::command(fake_ffmpeg())
+            .args(["-i", "no-such-plan", "out.m3u8"])
+            .stderr(Stdio::null())
+            .status()
+            .expect("run the stand-in")
+    }
+
+    #[test]
+    fn a_conversion_that_died_before_its_words_arrived_still_reports_them() {
+        // The race the first Linux CI run found, and it is a real one: the
+        // reader of a child's stderr is a thread of its own, and `try_wait`
+        // answering `Some` says the process is gone, not that the thread has
+        // run. Reading the buffer at that moment gave "The conversion stopped
+        // early (exit status: 1)" for a film ffmpeg had explained perfectly
+        // well, which is the generic sentence this whole change exists to
+        // remove. macOS and Windows never lost the race; Linux did, once.
+        let complaint = Complaint::new();
+        let writer = complaint.clone();
+        std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(20));
+            writer
+                .said
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .push_str("Error while decoding stream #0:0\n");
+            writer
+                .drained
+                .store(true, std::sync::atomic::Ordering::Release);
+        });
+
+        assert_eq!(
+            complaint.on_death(a_failed_status()),
+            "Error while decoding stream #0:0"
+        );
+    }
+
+    #[test]
+    fn a_conversion_that_died_saying_nothing_does_not_wait_for_ever() {
+        // The other side of that wait: ffmpeg can die without a word, and the
+        // deadline is what keeps the request from hanging on a sentence that is
+        // never coming. The drain is marked done, so this must not even reach
+        // the deadline.
+        let complaint = Complaint::new();
+        complaint
+            .drained
+            .store(true, std::sync::atomic::Ordering::Release);
+
+        // The status is taken before the clock starts: getting one means
+        // spawning a process, and on a loaded machine running the whole suite
+        // in parallel that alone outlasts the deadline being measured.
+        let status = a_failed_status();
+        let started = Instant::now();
+        let said = complaint.on_death(status);
+        assert!(said.starts_with("The conversion stopped early"), "{said}");
+        assert!(
+            started.elapsed() < Duration::from_millis(80),
+            "waited for a sentence that was already known not to be coming"
         );
     }
 
