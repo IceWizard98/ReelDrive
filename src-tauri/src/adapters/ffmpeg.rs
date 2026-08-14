@@ -797,6 +797,40 @@ mod tests {
         );
     }
 
+    /// Everything in a source file above its test module, with the line endings
+    /// it was checked out with taken out of the question.
+    ///
+    /// A Windows checkout has CRLF, so a pattern written with `\n` matches
+    /// nothing there and the whole file, tests included, reads as production.
+    /// That is what the first CI run this project ever had on Windows found,
+    /// and it found it because the caller asserts the separator was there,
+    /// rather than trusting a `split` that answers the whole string when it
+    /// matches nothing.
+    fn above_the_tests(source: &str) -> String {
+        let normalised = source.replace("\r\n", "\n");
+        // The test module, not the first `#[cfg(test)]` in the file: that
+        // attribute also sits on a constant halfway down `stream_server.rs`,
+        // and splitting on it threw away everything below, including both spawn
+        // sites in `handle`. The guard passed by looking at nothing.
+        match normalised.split_once("#[cfg(test)]\nmod tests") {
+            Some((above, _)) => above.to_string(),
+            None => normalised,
+        }
+    }
+
+    #[test]
+    fn the_guard_below_reads_a_file_checked_out_on_windows_too() {
+        // Same file twice, in the two shapes git hands out. Without the
+        // normalisation the second one comes back whole, so the guard would
+        // scan its own test module and pass on a spawn site added anywhere.
+        let unix = "fn main() {}\n\n#[cfg(test)]\nmod tests {\n    Command::new(\"x\");\n}\n";
+        let windows = unix.replace('\n', "\r\n");
+
+        assert_eq!(above_the_tests(unix), "fn main() {}\n\n");
+        assert_eq!(above_the_tests(&windows), "fn main() {}\n\n");
+        assert!(!above_the_tests(&windows).contains("Command::new("));
+    }
+
     #[test]
     fn nothing_this_app_runs_is_spawned_around_the_helper() {
         // The flag it carries is invisible to a test on any platform: it can
@@ -810,16 +844,9 @@ mod tests {
             ("stream_server.rs", include_str!("stream_server.rs")),
             ("lib.rs", include_str!("../lib.rs")),
         ] {
-            // The test module, not the first `#[cfg(test)]` in the file: that
-            // attribute also sits on a constant halfway down `stream_server.rs`,
-            // and splitting on it threw away everything below, including both
-            // spawn sites in `handle`. The guard passed by looking at nothing.
-            let production = source
-                .split("#[cfg(test)]\nmod tests")
-                .next()
-                .unwrap_or_default();
+            let production = above_the_tests(source);
             assert!(
-                production.len() < source.len(),
+                production.len() < source.replace("\r\n", "\n").len(),
                 "{name} has no test module to stop at, so this \
                  read the tests as production and can only pass by luck"
             );
@@ -830,7 +857,7 @@ mod tests {
                     .split_once("Command::new(program)")
                     .map(|(_, rest)| rest)
             } else {
-                Some(production)
+                Some(production.as_str())
             };
             assert!(
                 !below_helper.unwrap_or_default().contains("Command::new("),
