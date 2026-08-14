@@ -40,6 +40,28 @@ pub fn tool_path(dirs: &[PathBuf], name: &str) -> PathBuf {
         .unwrap_or_else(|| PathBuf::from(name))
 }
 
+/// Windows flag for "run this child without giving it a console window".
+///
+/// The app is a GUI binary, ffmpeg and ffprobe are console ones, and Windows
+/// hands a console child its own window when the parent has none. Without this
+/// a black box flashes up for every probe and one stays on screen for the whole
+/// length of every conversion, on top of the film.
+#[cfg(windows)]
+const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+
+/// Every process this app starts is built here, so no spawn can forget the
+/// flag. A plain `Command` everywhere but Windows.
+pub fn command(program: impl AsRef<std::ffi::OsStr>) -> Command {
+    #[allow(unused_mut)]
+    let mut command = Command::new(program);
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        command.creation_flags(CREATE_NO_WINDOW);
+    }
+    command
+}
+
 /// `ffprobe` arguments for one file. JSON out, no banner, streams and format —
 /// the container name and the duration both come from the format block.
 pub fn probe_args(file: &Path) -> Vec<String> {
@@ -267,6 +289,18 @@ fn codec_args(delivery: Delivery, video_codec: Option<&str>) -> Vec<String> {
             // H.264 High 10, which no browser decodes.
             "-pix_fmt".into(),
             "yuv420p".into(),
+            // A segment can only end on a keyframe, and x264 places one every
+            // 250 frames by default: `-hls_time 4` then cannot close anything
+            // before ten seconds of video have been encoded, so the first
+            // segment, the one nothing appears without, costs two to three
+            // times what it should. 96 frames is four seconds at 24fps and
+            // less above it, which is the boundary being asked for.
+            "-g".into(),
+            "96".into(),
+            // The other half: `-g` is an upper bound and x264 will happily
+            // place them further apart on quiet footage without a floor.
+            "-keyint_min".into(),
+            "96".into(),
             "-c:a".into(),
             "aac".into(),
             "-b:a".into(),
@@ -459,7 +493,7 @@ pub fn missing_tool(tool: &Path, error: &std::io::Error) -> FfmpegError {
 
 /// Run ffprobe and read the file's profile.
 pub fn probe(ffprobe: &Path, file: &Path) -> Result<MediaProfile, FfmpegError> {
-    let output = Command::new(ffprobe)
+    let output = command(ffprobe)
         .args(probe_args(file))
         .stdin(Stdio::null())
         .output()
@@ -761,6 +795,88 @@ mod tests {
                 .container,
             "webm"
         );
+    }
+
+    #[test]
+    fn nothing_this_app_runs_is_spawned_around_the_helper() {
+        // The flag it carries is invisible to a test on any platform: it can
+        // only be seen as a black window opening on a Windows machine, which no
+        // suite here runs on. What decays is not the flag but the discipline,
+        // so this guards the discipline. The four spawn sites in the playback
+        // path had no console flag at all, and every one of them put a window
+        // on top of the film.
+        for (name, source) in [
+            ("ffmpeg.rs", include_str!("ffmpeg.rs")),
+            ("stream_server.rs", include_str!("stream_server.rs")),
+            ("lib.rs", include_str!("../lib.rs")),
+        ] {
+            // The test module, not the first `#[cfg(test)]` in the file: that
+            // attribute also sits on a constant halfway down `stream_server.rs`,
+            // and splitting on it threw away everything below, including both
+            // spawn sites in `handle`. The guard passed by looking at nothing.
+            let production = source
+                .split("#[cfg(test)]\nmod tests")
+                .next()
+                .unwrap_or_default();
+            assert!(
+                production.len() < source.len(),
+                "{name} has no test module to stop at, so this \
+                 read the tests as production and can only pass by luck"
+            );
+            // `command` itself is the one place that may, which is why it is
+            // the only file this looks at below its own definition.
+            let below_helper = if name == "ffmpeg.rs" {
+                production
+                    .split_once("Command::new(program)")
+                    .map(|(_, rest)| rest)
+            } else {
+                Some(production)
+            };
+            assert!(
+                !below_helper.unwrap_or_default().contains("Command::new("),
+                "{name} spawns something without going through ffmpeg::command"
+            );
+        }
+    }
+
+    #[test]
+    fn a_conversion_closes_a_segment_when_the_playlist_asks_for_one() {
+        // `-hls_time 4` can only cut on a keyframe, and libx264's own default
+        // puts one every 250 frames: ten seconds of video at 25fps, four at
+        // 60fps and more. So the first segment, the one the player is waiting
+        // on before anything at all appears, takes two to three times longer
+        // to encode than it needs to. On macOS this never shows, because HEVC
+        // is copied rather than converted there.
+        let args = hls_args(
+            Path::new("/m/a.mkv"),
+            Delivery::Transcode,
+            0.0,
+            Some("hevc"),
+            0,
+            Path::new("/tmp/session"),
+        );
+        assert!(args.windows(2).any(|w| w == ["-g", "96"]), "{args:?}");
+        assert!(
+            args.windows(2).any(|w| w == ["-keyint_min", "96"]),
+            "without a floor, x264 is free to place them further apart anyway: {args:?}"
+        );
+    }
+
+    #[test]
+    fn a_copied_stream_is_never_told_how_to_place_its_keyframes() {
+        // `-g` on a `-c copy` is meaningless at best: there is no encoder to
+        // instruct, and the segment boundaries come from the source.
+        for delivery in [Delivery::Remux, Delivery::TranscodeAudio] {
+            let args = hls_args(
+                Path::new("/m/a.mkv"),
+                delivery,
+                0.0,
+                Some("h264"),
+                0,
+                Path::new("/tmp/session"),
+            );
+            assert!(!args.iter().any(|a| a == "-g"), "{delivery:?}: {args:?}");
+        }
     }
 
     #[test]

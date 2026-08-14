@@ -194,6 +194,28 @@
 
   const isPlaylist = (url) => url.endsWith(".m3u8");
   let hls = null;
+  // The last fatal complaint hls.js made, kept so the error box can print it.
+  // The element itself reports a failure with no reason attached, and on the
+  // engines that need hls.js the reason is here and nowhere else: thrown away,
+  // a converted film that never arrived read as "This file could not be
+  // played", which names neither what failed nor where.
+  let hlsFault = null;
+
+  /// One line out of an hls.js error, or nothing if it carries no detail.
+  ///
+  /// `type` and `details` are the library's own words for what went wrong;
+  /// `response.code` is the HTTP status behind it, which is what separates a
+  /// conversion that has not written the playlist yet (504) from a request the
+  /// server refused (403) or a segment that is not there (404). Only the file
+  /// name of the URL: the rest is the loopback address and a token.
+  function faultLine(data) {
+    if (!data) return null;
+    const parts = [data.type, data.details].filter(Boolean);
+    if (data.response?.code) parts.push(`HTTP ${data.response.code}`);
+    const name = data.url?.split("/").pop();
+    if (name) parts.push(name);
+    return parts.length ? `Playback failed: ${parts.join(", ")}.` : null;
+  }
   // Numbered for the same reason seeks are: the import below is an await, and
   // whatever happens during it — a second attach, or leaving the player — has
   // already destroyed the instance this call is about to replace. Building one
@@ -209,6 +231,8 @@
     const token = ++attachToken;
     hls?.destroy();
     hls = null;
+    // Whatever the last stream complained about, it does not describe this one.
+    hlsFault = null;
     if (!isPlaylist(url) || NATIVE_HLS) {
       video.src = url;
       video.load();
@@ -223,11 +247,27 @@
       video.load();
       return;
     }
-    hls = new Hls();
+    hls = new Hls({
+      // The first playlist is the one request that can legitimately take a
+      // while: the backend answers 504 until ffmpeg has written the first
+      // segment, and on Windows an HEVC film is a full libx264 encode rather
+      // than the copy macOS gets. The library's default is a single quick
+      // attempt, which turned that wait into a dead player.
+      manifestLoadPolicy: {
+        default: {
+          maxTimeToFirstByteMs: 30_000,
+          maxLoadTimeMs: 60_000,
+          timeoutRetry: { maxNumRetry: 4, retryDelayMs: 1000, maxRetryDelayMs: 8000 },
+          errorRetry: { maxNumRetry: 6, retryDelayMs: 1000, maxRetryDelayMs: 8000 },
+        },
+      },
+    });
     // A stalled segment recovers by itself; only a fatal error means the
     // picture is not coming, and that is the same dead end as a refused file.
     hls.on(Hls.Events.ERROR, (_event, data) => {
-      if (data.fatal) onPlaybackError();
+      if (!data.fatal) return;
+      hlsFault = data;
+      onPlaybackError();
     });
     hls.loadSource(url);
     hls.attachMedia(video);
@@ -750,7 +790,15 @@
       // is none to read off it. ffmpeg's own complaint is the reason, and the
       // backend kept it — "Invalid data found when processing input" is
       // something a user can act on, "This file could not be played" is not.
-      error = (await playbackFailure().catch(() => null)) || "This file could not be played.";
+      // Both when there are both: ffmpeg's sentence says what was wrong with
+      // the film, the library's says where the picture stopped, and on a
+      // machine nobody here can reach the two together are the whole report.
+      const said = await playbackFailure().catch(() => null);
+      const fault = faultLine(hlsFault);
+      error =
+        said && fault
+          ? `${said} (${fault})`
+          : said || fault || "This file could not be played.";
       show();
       return;
     }

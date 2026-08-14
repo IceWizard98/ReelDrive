@@ -8,7 +8,7 @@
 use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::net::{Ipv4Addr, SocketAddrV4, TcpListener};
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Stdio};
+use std::process::{Child, Stdio};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -249,7 +249,7 @@ impl StreamServer {
         let dir = std::env::temp_dir().join(format!("reeldrive-{id}"));
         std::fs::create_dir_all(&dir)?;
 
-        let spawned = Command::new(&self.config.ffmpeg)
+        let spawned = ffmpeg::command(&self.config.ffmpeg)
             .args(ffmpeg::hls_args(
                 &file,
                 delivery,
@@ -495,7 +495,94 @@ fn respond_failure(
 /// How long a playlist request waits for ffmpeg to write the first segment.
 /// Copying takes milliseconds; a full conversion of a large frame needs longer,
 /// and giving up early shows the user a failure that was only slowness.
+#[cfg(not(test))]
 const PLAYLIST_WAIT: Duration = Duration::from_secs(20);
+/// Two seconds under test. The deadline is a thing several tests wait out, and
+/// twenty seconds each would be most of the suite's running time.
+#[cfg(test)]
+const PLAYLIST_WAIT: Duration = Duration::from_secs(2);
+
+/// The playlist as one whole snapshot, or nothing if it was caught mid-rewrite.
+///
+/// ffmpeg does not append to this file, it rewrites it in place after every
+/// segment, and during a remux that is dozens of times a second. A read landing
+/// inside one of those rewrites gets an empty or half-written file, and serving
+/// it is worse than serving nothing: hls.js, which is what plays on every
+/// engine but WKWebView, treats a body with no `#EXTM3U` as a fatal parse error
+/// and never asks for it again. Waiting a few milliseconds for the next whole
+/// one costs nothing and is the difference between a film that starts and a
+/// film that reports it cannot be played.
+///
+/// Whole means both ends: the tag it has to open with, and the newline ffmpeg
+/// closes every line with: a body cut halfway through the last segment name
+/// begins correctly and is still not a playlist.
+fn playlist_snapshot(file: &Path) -> Option<Vec<u8>> {
+    let bytes = std::fs::read(file).ok()?;
+    let whole = bytes.starts_with(b"#EXTM3U") && bytes.last() == Some(&b'\n');
+    whole.then_some(bytes)
+}
+
+/// Answer with a playlist read in one go, rather than streamed off disk.
+///
+/// `serve_file` sends a length taken from a `stat` and then reads the file, and
+/// for a file another process rewrites continuously those are two different
+/// files. This one has the bytes already.
+fn respond_playlist(
+    request: tiny_http::Request,
+    bytes: Vec<u8>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let length = bytes.len();
+    let response = tiny_http::Response::new(
+        200.into(),
+        vec![
+            header("Content-Type", "application/vnd.apple.mpegurl")?,
+            // An event playlist grows: cached once, the player never sees the
+            // rest of the film.
+            header("Cache-Control", "no-cache")?,
+            header(CORS.0, CORS.1)?,
+        ],
+        io::Cursor::new(bytes),
+        Some(length),
+        None,
+    );
+    Ok(request.respond(response)?)
+}
+
+/// What the conversion has said so far, whether or not it has stopped.
+fn said_so_far(session: &Session, id: &str) -> String {
+    match locked(session).as_ref() {
+        Some(current) if current.id == id => current
+            .said
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .trim()
+            .to_string(),
+        _ => String::new(),
+    }
+}
+
+/// The deadline is up and there is still nothing playable.
+///
+/// It stays a 504 rather than becoming a 500: a conversion this slow is not a
+/// conversion that failed. What changes is that it no longer goes quiet. The
+/// bare status left `failure` empty, so the player asked the backend why the
+/// film had not arrived, got nothing, and printed the one sentence that fits
+/// every case and explains none of them.
+fn respond_stalled(
+    request: tiny_http::Request,
+    failure: &Failure,
+    said: String,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let seconds = PLAYLIST_WAIT.as_secs();
+    let said = if said.is_empty() {
+        format!("Nothing playable after {seconds} seconds of conversion.")
+    } else {
+        format!("Nothing playable after {seconds} seconds. ffmpeg said: {said}")
+    };
+    eprintln!("stream: {said}");
+    *failure.lock().unwrap_or_else(|e| e.into_inner()) = Some(said);
+    respond_status(request, 504)
+}
 
 /// `/hls/{token}/{session}/{file}` — the playlist and the segments beside it.
 fn handle_hls(
@@ -529,29 +616,44 @@ fn handle_hls(
     // what turns that race into a slightly slower start instead of an error.
     if name == ffmpeg::HLS_PLAYLIST {
         let deadline = Instant::now() + PLAYLIST_WAIT;
-        while !file.is_file() {
-            if Instant::now() >= deadline {
-                return respond_status(request, 504);
+        loop {
+            if let Some(bytes) = playlist_snapshot(&file) {
+                // The playlist is there and whole, but it may have stopped
+                // growing. This is the poll the player makes every few seconds,
+                // so it is also where a conversion that died mid-film shows up.
+                if let Some(said) = conversion_failure(session, id) {
+                    return respond_failure(request, failure, said);
+                }
+                // A playlist in hand is the answer to whatever was recorded
+                // while it was not. The wait below records a reason at the
+                // deadline and the film goes on to play anyway, because hls.js
+                // asks again: left standing, that sentence is what the window
+                // would print for some later, unrelated failure.
+                *failure.lock().unwrap_or_else(|e| e.into_inner()) = None;
+                return respond_playlist(request, bytes);
             }
             // Still ours? A session replaced mid-wait has had its directory
             // removed, and waiting out the deadline for it helps nobody.
+            //
+            // Asked before the deadline, not after: `respond_stalled` writes
+            // into the failure every session shares, so timing out on a session
+            // the user has already seeked away from would hang that sentence on
+            // the one now playing.
             match locked(session).as_ref() {
                 Some(current) if current.id == id => {}
                 _ => return respond_status(request, 404),
             }
             // A conversion that refused the file is not slowness: waiting the
-            // rest of the twenty seconds for a playlist that will never be
-            // written only delays the sentence explaining why.
+            // rest of the deadline for a playlist that will never be written
+            // only delays the sentence explaining why.
             if let Some(said) = conversion_failure(session, id) {
                 return respond_failure(request, failure, said);
             }
+            if Instant::now() >= deadline {
+                let said = said_so_far(session, id);
+                return respond_stalled(request, failure, said);
+            }
             std::thread::sleep(Duration::from_millis(50));
-        }
-        // The playlist exists but may have stopped growing. This is the poll
-        // the player makes every few seconds, so it is also where a conversion
-        // that died mid-film is noticed.
-        if let Some(said) = conversion_failure(session, id) {
-            return respond_failure(request, failure, said);
         }
     }
 
@@ -609,7 +711,7 @@ fn handle(
             // had read a byte, so a track it could not extract arrived as an
             // empty file. An empty WebVTT is a track that switches on and shows
             // nothing, which is indistinguishable from a broken player.
-            let done = Command::new(&config.ffmpeg)
+            let done = ffmpeg::command(&config.ffmpeg)
                 .args(ffmpeg::subtitle_args(&file, track, start_param(&query)))
                 .stdin(Stdio::null())
                 .output()?;
@@ -657,7 +759,7 @@ fn handle(
             // reaches this: it is the fMP4-on-a-pipe form, which `examples/
             // stream.rs` still exercises and which WebKit will not play.
             let vcodec = param(&query, "vcodec").filter(|c| !c.is_empty());
-            let child = Command::new(&config.ffmpeg)
+            let child = ffmpeg::command(&config.ffmpeg)
                 .args(ffmpeg::stream_args(
                     &file,
                     delivery,
@@ -762,20 +864,15 @@ fn serve_file(request: tiny_http::Request, file: &Path) -> Result<(), Box<dyn st
         .map(|h| parse_range(h.value.as_str(), size))
         .unwrap_or(Wanted::Whole);
 
-    let mut common = vec![
+    let common = vec![
         header("Content-Type", content_type_for(file))?,
         header("Accept-Ranges", "bytes")?,
         header(CORS.0, CORS.1)?,
     ];
 
-    // An event playlist is a file that grows: the player fetches the same URL
-    // every few seconds and expects a longer answer each time. Cached once, it
-    // never sees the rest of the film. WebKit reloads it anyway, but hls.js —
-    // which is what plays on Windows and Linux — goes through the ordinary
-    // fetch cache and does not.
-    if file.extension().and_then(|e| e.to_str()) == Some("m3u8") {
-        common.push(header("Cache-Control", "no-cache")?);
-    }
+    // The playlist no longer comes through here: it is read in one go and
+    // answered by `respond_playlist`, which carries this header itself. What is
+    // left of this route is files that do not change while they are being read.
 
     match wanted {
         Wanted::Unsatisfiable => {
@@ -886,6 +983,10 @@ fn pipe_body(
 #[cfg(test)]
 mod tests {
     use super::*;
+    // Only the tests build a command by hand now: `process_alive` asks the
+    // system about a pid. Everything the app itself runs goes through
+    // `ffmpeg::command`, which is what the guard below keeps true.
+    use std::process::Command;
 
     #[test]
     fn a_query_is_split_and_decoded() {
@@ -917,9 +1018,6 @@ mod tests {
         }
     }
 
-    // `hls_server` builds its fake ffmpeg out of a shell script, so it — and
-    // every test that reaches for it — only exists on unix.
-    #[cfg(unix)]
     #[test]
     fn a_chosen_audio_track_rules_out_handing_the_file_over() {
         // The untouched file carries every track and nothing downstream picks
@@ -948,7 +1046,6 @@ mod tests {
         assert!(dubbed.contains("/hls/"), "{dubbed}");
     }
 
-    #[cfg(unix)]
     #[test]
     fn a_start_offset_rules_out_handing_the_file_over() {
         // A direct URL is the file itself: the server answers it with the bytes
@@ -1200,26 +1297,45 @@ mod tests {
         }
     }
 
-    /// A session whose "ffmpeg" is a shell script writing a playlist and one
-    /// segment: the routing, the waiting and the headers are what is under test,
-    /// and a real conversion would test ffmpeg instead.
-    #[cfg(unix)]
-    fn fake_ffmpeg(dir: &Path, body: &str) -> PathBuf {
-        use std::os::unix::fs::PermissionsExt;
-        let script = dir.join("fake-ffmpeg");
-        std::fs::write(&script, format!("#!/bin/sh\n{body}\n")).expect("write");
-        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).expect("chmod");
-        script
+    /// The compiled stand-in for ffmpeg, beside the test binary.
+    ///
+    /// A real process rather than a shell script, which is what lets every test
+    /// below run on Windows: `#!/bin/sh` is not something Windows executes, and
+    /// gating them all on unix left the playback path untested on the one
+    /// platform it was broken on. `cargo test` builds the examples, so it is
+    /// already there; `cargo test --lib` does not, hence the sentence.
+    fn fake_ffmpeg() -> PathBuf {
+        let test_binary = std::env::current_exe().expect("current exe");
+        let target = test_binary
+            .parent()
+            .and_then(Path::parent)
+            .expect("target directory");
+        let tool = target
+            .join("examples")
+            .join(format!("fake_ffmpeg{}", std::env::consts::EXE_SUFFIX));
+        assert!(
+            tool.is_file(),
+            "{} is missing: run `cargo test`, not `cargo test --lib`, so the \
+             examples are built",
+            tool.display()
+        );
+        tool
     }
 
-    #[cfg(unix)]
-    fn hls_server(body: &str) -> (StreamServer, tempfile::TempDir) {
+    /// A session whose "ffmpeg" carries out `plan`: the routing, the waiting and
+    /// the headers are what is under test, and a real conversion would test
+    /// ffmpeg instead.
+    ///
+    /// The plan is the content of the fake film, because that is the only
+    /// channel the stand-in has: the command line belongs to the code under
+    /// test. See `examples/fake_ffmpeg.rs` for the directives.
+    fn hls_server(plan: &str) -> (StreamServer, tempfile::TempDir) {
         let dir = tempfile::TempDir::new().expect("tempdir");
         std::fs::create_dir(dir.path().join("Movie")).expect("mkdir");
-        std::fs::write(dir.path().join("Movie/Movie.mkv"), b"not really a film").expect("write");
+        std::fs::write(dir.path().join("Movie/Movie.mkv"), plan).expect("write");
         let server = StreamServer::start(StreamConfig {
             media_root: dir.path().to_path_buf(),
-            ffmpeg: fake_ffmpeg(dir.path(), body),
+            ffmpeg: fake_ffmpeg(),
         })
         .expect("start");
         (server, dir)
@@ -1231,17 +1347,12 @@ mod tests {
         format!("/{}", after_host.split_once('/').expect("path").1)
     }
 
-    #[cfg(unix)]
     #[test]
     fn a_session_serves_its_playlist_and_segments_with_the_types_safari_needs() {
-        // `$9` and `${10}` are the last two arguments: the segment pattern and
-        // the playlist, which is how the script learns where to write.
         let (server, _dir) = hls_server(
-            r#"for a in "$@"; do case "$a" in *index.m3u8) OUT="$a";; esac; done
-DIR=$(dirname "$OUT")
-printf 'x' > "$DIR/init.mp4"
-printf 'segment' > "$DIR/seg00000.m4s"
-printf '#EXTM3U\n#EXT-X-MAP:URI="init.mp4"\nseg00000.m4s\n' > "$OUT"
+            r#"file init.mp4 x
+file seg00000.m4s segment
+playlist #EXTM3U\n#EXT-X-MAP:URI="init.mp4"\nseg00000.m4s\n
 sleep 30"#,
         );
 
@@ -1270,12 +1381,10 @@ sleep 30"#,
         }
     }
 
-    #[cfg(unix)]
     #[test]
     fn a_session_is_reachable_only_with_the_token_and_only_by_name() {
         let (server, _dir) = hls_server(
-            r#"for a in "$@"; do case "$a" in *index.m3u8) OUT="$a";; esac; done
-printf '#EXTM3U\n' > "$OUT"
+            r#"playlist #EXTM3U\n
 sleep 30"#,
         );
         let url = server
@@ -1303,14 +1412,12 @@ sleep 30"#,
         assert!(head.contains("Access-Control-Allow-Origin: *"), "{head}");
     }
 
-    #[cfg(unix)]
     #[test]
     fn a_new_session_stops_the_one_it_replaces() {
-        // The script outlives its usefulness on purpose: if replacing a session
-        // did not kill it, this process would still be running at the end.
+        // The stand-in outlives its usefulness on purpose: if replacing a
+        // session did not kill it, it would still be running at the end.
         let (server, _dir) = hls_server(
-            r#"for a in "$@"; do case "$a" in *index.m3u8) OUT="$a";; esac; done
-printf '#EXTM3U\n' > "$OUT"
+            r#"playlist #EXTM3U\n
 sleep 120"#,
         );
 
@@ -1325,6 +1432,15 @@ sleep 120"#,
             let session = guard.as_ref().expect("a session");
             (session.dir.clone(), session.child.id())
         };
+        // The helper has to be able to answer "yes" before either "no" below
+        // means anything. On Windows it asks `tasklist`, and a `tasklist` that
+        // is missing, refused, or answering in another shape falls through to
+        // `false`: both assertions would then pass without anything ever
+        // having been killed, on the one platform this whole file exists for.
+        assert!(
+            process_alive(old_pid),
+            "the first conversion is not running, so nothing below is a test"
+        );
 
         let second = server
             .stream_url("Movie/Movie.mkv", 600.0, Delivery::Remux, None, 0)
@@ -1357,7 +1473,6 @@ sleep 120"#,
         );
     }
 
-    #[cfg(unix)]
     #[test]
     fn stopping_a_session_lets_go_of_the_lock_before_tearing_it_down() {
         // The same rule `start_hls` spells out, on the other way out. The
@@ -1368,8 +1483,7 @@ sleep 120"#,
         // takes. Assigning through the guard is what does that, and it is one
         // character away from being right.
         let (server, _dir) = hls_server(
-            r#"for a in "$@"; do case "$a" in *index.m3u8) OUT="$a";; esac; done
-printf '#EXTM3U\n' > "$OUT"
+            r#"playlist #EXTM3U\n
 sleep 30"#,
         );
         server
@@ -1429,14 +1543,29 @@ sleep 30"#,
             .unwrap_or(false)
     }
 
-    #[cfg(unix)]
+    /// The same question where there is no `kill`. `tasklist` answers a pid it
+    /// cannot find with a sentence rather than a failure, so the pid itself has
+    /// to appear in the output for the process to count as alive.
+    #[cfg(windows)]
+    fn process_alive(pid: u32) -> bool {
+        Command::new("tasklist")
+            .args(["/NH", "/FI", &format!("PID eq {pid}")])
+            .stderr(Stdio::null())
+            .output()
+            .map(|out| String::from_utf8_lossy(&out.stdout).contains(&pid.to_string()))
+            .unwrap_or(false)
+    }
+
     #[test]
     fn a_playlist_that_never_arrives_times_out_instead_of_hanging() {
         // ffmpeg refusing the file leaves the directory empty; the request must
         // end by itself rather than holding the connection open for ever.
         // It ends early *because* the conversion is dead — waiting out the rest
         // of the deadline for a playlist nobody is writing helps nobody.
-        let (server, _dir) = hls_server("printf 'Invalid data found\\n' 1>&2\nexit 1");
+        let (server, _dir) = hls_server(
+            r#"stderr Invalid data found\n
+exit 1"#,
+        );
         let url = server
             .stream_url("Movie/Movie.mkv", 0.0, Delivery::Remux, None, 0)
             .expect("session");
@@ -1454,7 +1583,6 @@ sleep 30"#,
         );
     }
 
-    #[cfg(unix)]
     #[test]
     fn a_conversion_that_dies_halfway_is_reported_rather_than_left_to_stall() {
         // The failure the user actually meets: one segment is written, ffmpeg
@@ -1462,12 +1590,10 @@ sleep 30"#,
         // polling the same playlist for ever and the film simply stops partway
         // through, with nothing on screen and nothing in the log to say why.
         let (server, _dir) = hls_server(
-            r#"for a in "$@"; do case "$a" in *index.m3u8) OUT="$a";; esac; done
-DIR=$(dirname "$OUT")
-printf 'x' > "$DIR/init.mp4"
-printf 'segment' > "$DIR/seg00000.m4s"
-printf '#EXTM3U\n#EXT-X-MAP:URI="init.mp4"\n#EXTINF:4.000000,\nseg00000.m4s\n' > "$OUT"
-printf 'Error while decoding stream #0:0\n' 1>&2
+            r#"file init.mp4 x
+file seg00000.m4s segment
+playlist #EXTM3U\n#EXT-X-MAP:URI="init.mp4"\n#EXTINF:4.000000,\nseg00000.m4s\n
+stderr Error while decoding stream #0:0\n
 exit 1"#,
         );
 
@@ -1497,14 +1623,12 @@ exit 1"#,
         );
     }
 
-    #[cfg(unix)]
     #[test]
     fn a_conversion_that_is_still_running_is_not_called_dead() {
         // The opposite mistake would be worse than the bug: reporting a failure
         // for every poll would end a film that was only being converted slowly.
         let (server, _dir) = hls_server(
-            r#"for a in "$@"; do case "$a" in *index.m3u8) OUT="$a";; esac; done
-printf '#EXTM3U\n' > "$OUT"
+            r#"playlist #EXTM3U\n
 sleep 30"#,
         );
         let url = server
@@ -1517,17 +1641,14 @@ sleep 30"#,
         assert_eq!(server.last_failure(), None);
     }
 
-    #[cfg(unix)]
     #[test]
     fn a_conversion_that_finished_cleanly_is_not_called_dead() {
         // Exit 0 is how every complete film ends: the playlist carries its
         // end-of-list marker and the last poll must still be answered with it.
         let (server, _dir) = hls_server(
-            r#"for a in "$@"; do case "$a" in *index.m3u8) OUT="$a";; esac; done
-DIR=$(dirname "$OUT")
-printf 'x' > "$DIR/init.mp4"
-printf 'segment' > "$DIR/seg00000.m4s"
-printf '#EXTM3U\n#EXTINF:4.000000,\nseg00000.m4s\n#EXT-X-ENDLIST\n' > "$OUT"
+            r#"file init.mp4 x
+file seg00000.m4s segment
+playlist #EXTM3U\n#EXTINF:4.000000,\nseg00000.m4s\n#EXT-X-ENDLIST\n
 exit 0"#,
         );
         let url = server
@@ -1540,18 +1661,178 @@ exit 0"#,
         assert_eq!(server.last_failure(), None);
     }
 
-    #[cfg(unix)]
+    #[test]
+    fn a_conversion_that_writes_nothing_in_time_says_so_instead_of_going_quiet() {
+        // The bare 504 this replaces is what the user actually met: the player
+        // gave up, asked the backend why, and the backend had recorded nothing
+        // because ffmpeg had not failed, it was only slow. What reached the
+        // screen was the one sentence that fits every failure and explains
+        // none: "This file could not be played."
+        let (server, _dir) = hls_server("sleep 30");
+        let url = server
+            .stream_url("Movie/Movie.mkv", 0.0, Delivery::Transcode, None, 0)
+            .expect("session");
+
+        let (head, _) = get(server.port, &target_of(&url), "");
+        assert!(head.starts_with("HTTP/1.1 504"), "{head}");
+        let said = server.last_failure().expect("a reason for the timeout");
+        assert!(
+            said.contains("Nothing playable"),
+            "the reason has to name what happened: {said}"
+        );
+    }
+
+    #[test]
+    fn a_stalled_conversion_carries_whatever_ffmpeg_had_already_said() {
+        // ffmpeg complaining without giving up is the interesting case: the
+        // complaint is the only clue, and it would otherwise sit in a buffer
+        // nobody reads until the process ends, which here it never does.
+        let (server, _dir) = hls_server(
+            r#"stderr Could not find a decoder for stream 0\n
+sleep 30"#,
+        );
+        let url = server
+            .stream_url("Movie/Movie.mkv", 0.0, Delivery::Transcode, None, 0)
+            .expect("session");
+
+        let (head, _) = get(server.port, &target_of(&url), "");
+        assert!(head.starts_with("HTTP/1.1 504"), "{head}");
+        let said = server.last_failure().expect("a reason");
+        assert!(said.contains("Could not find a decoder"), "{said}");
+    }
+
+    #[test]
+    fn a_timeout_the_conversion_went_on_to_disprove_is_not_kept_on_the_record() {
+        // The 504 is deliberately not a failure, and hls.js is now told to ask
+        // again: a conversion slower than the deadline times out once and then
+        // plays. The sentence explaining that timeout must not outlive it. Left
+        // standing it is what the window prints for the *next* failure, whatever
+        // that turns out to be, because the player asks the backend for a reason
+        // and gets the one recorded minutes earlier.
+        let (server, _dir) = hls_server(
+            r#"sleep 3
+playlist #EXTM3U\n
+sleep 30"#,
+        );
+        let url = server
+            .stream_url("Movie/Movie.mkv", 0.0, Delivery::Transcode, None, 0)
+            .expect("session");
+        let playlist = target_of(&url);
+
+        let (head, _) = get(server.port, &playlist, "");
+        assert!(head.starts_with("HTTP/1.1 504"), "{head}");
+        assert!(server.last_failure().is_some(), "the timeout is recorded");
+
+        let (head, _) = get(server.port, &playlist, "");
+        assert!(head.starts_with("HTTP/1.1 200"), "{head}");
+        assert_eq!(
+            server.last_failure(),
+            None,
+            "a playlist in hand answers the timeout that came before it"
+        );
+    }
+
+    #[test]
+    fn a_playlist_is_whole_only_with_both_of_its_ends() {
+        // The rule itself, on files that sit still. The test below drives the
+        // same rule through a real conversion, but which half-written state a
+        // request lands on there depends on when the request arrives: the
+        // truncated body exists for three tenths of a second, and a loaded
+        // machine can miss that window and pass without ever having read one.
+        // Here every state is read on purpose.
+        let dir = tempfile::TempDir::new().expect("tempdir");
+        let file = dir.path().join(ffmpeg::HLS_PLAYLIST);
+
+        assert_eq!(
+            playlist_snapshot(&file),
+            None,
+            "a playlist not yet written is not a playlist"
+        );
+        for cut in [
+            // Caught before ffmpeg wrote anything.
+            "",
+            // Caught halfway through the last segment name: opens correctly,
+            // and is still half a file.
+            "#EXTM3U\n#EXTINF:4.000000,\nseg000",
+            // The tag itself half written.
+            "#EXT",
+            // Every line closed and the tag missing: the exact body hls.js
+            // calls a fatal parse error, and the one the trailing newline on
+            // its own would let through.
+            "#EXTINF:4.000000,\nseg00000.m4s\n",
+        ] {
+            std::fs::write(&file, cut).expect("write");
+            assert_eq!(playlist_snapshot(&file), None, "served {cut:?}");
+        }
+
+        let whole = "#EXTM3U\n#EXTINF:4.000000,\nseg00000.m4s\n";
+        std::fs::write(&file, whole).expect("write");
+        assert_eq!(
+            playlist_snapshot(&file).as_deref(),
+            Some(whole.as_bytes()),
+            "a whole playlist must be served as it is"
+        );
+    }
+
+    #[test]
+    fn a_playlist_caught_mid_rewrite_is_never_served_half_written() {
+        // ffmpeg does not append to the playlist, it rewrites it whole after
+        // every segment, and during a remux that is dozens of times a second.
+        // A read landing inside one of those rewrites gets an empty or partial
+        // file. WKWebView asks again and nobody notices; hls.js, which is what
+        // plays on Windows and Linux, calls a body with no `#EXTM3U` a fatal
+        // parse error and never asks again. One unlucky first request, and the
+        // film is over before it started.
+        let (server, _dir) = hls_server(
+            // Both halves of what "whole" means, in the order a rewrite goes
+            // through them: nothing at all, then a body that opens correctly and
+            // stops halfway through the last segment name. Without the second
+            // step the trailing-newline half of the rule could be deleted and
+            // every test here would still pass.
+            r#"file init.mp4 x
+file seg00000.m4s segment
+playlist
+sleep 0.3
+playlist #EXTM3U\n#EXTINF:4.000000,\nseg000
+sleep 0.3
+playlist #EXTM3U\n#EXTINF:4.000000,\nseg00000.m4s\n
+sleep 30"#,
+        );
+        let url = server
+            .stream_url("Movie/Movie.mkv", 0.0, Delivery::Remux, None, 0)
+            .expect("session");
+
+        let (head, body) = get(server.port, &target_of(&url), "");
+        assert!(head.starts_with("HTTP/1.1 200"), "{head}");
+        let text = String::from_utf8_lossy(&body);
+        assert!(
+            text.starts_with("#EXTM3U"),
+            "a playlist that is not a playlist: {text:?}"
+        );
+        // The other end, and the reason this is a separate assertion: a body
+        // truncated after the segment name still opens with the tag, so the
+        // check above passes on exactly the half-written file this test is
+        // about.
+        assert!(
+            text.ends_with("seg00000.m4s\n"),
+            "a playlist cut short is still not a playlist: {text:?}"
+        );
+        assert!(
+            head.contains("Content-Type: application/vnd.apple.mpegurl"),
+            "{head}"
+        );
+        assert!(head.contains("Access-Control-Allow-Origin: *"), "{head}");
+    }
+
     #[test]
     fn a_growing_playlist_is_never_served_from_a_cache() {
         // The player asks for the same URL every few seconds and expects a
         // longer answer each time. Cached once, it plays what existed at the
         // first fetch and stops there.
         let (server, _dir) = hls_server(
-            r#"for a in "$@"; do case "$a" in *index.m3u8) OUT="$a";; esac; done
-DIR=$(dirname "$OUT")
-printf 'x' > "$DIR/init.mp4"
-printf 'segment' > "$DIR/seg00000.m4s"
-printf '#EXTM3U\n#EXTINF:4.000000,\nseg00000.m4s\n' > "$OUT"
+            r#"file init.mp4 x
+file seg00000.m4s segment
+playlist #EXTM3U\n#EXTINF:4.000000,\nseg00000.m4s\n
 sleep 30"#,
         );
         let url = server
@@ -1568,14 +1849,15 @@ sleep 30"#,
         assert!(!head.contains("Cache-Control"), "{head}");
     }
 
-    /// The one route that still answers straight from an ffmpeg pipe. It had no
-    /// test at all, and the teardown that kills that ffmpeg lives on the way out
-    /// of this function — so breaking either shows up here.
-    #[cfg(unix)]
+    /// The one route that still answers straight from an ffmpeg pipe, and it had
+    /// no test at all.
+    ///
+    /// The name no longer promises anything about stragglers: the check that
+    /// looked for them is gone, for the reason spelled out at the end.
     #[test]
-    fn a_subtitle_track_is_served_as_webvtt_and_leaves_no_process() {
-        let (server, dir) = hls_server(
-            r#"printf 'WEBVTT\n\n00:00:01.000 --> 00:00:02.000\nCiao\n'
+    fn a_subtitle_track_is_served_as_webvtt() {
+        let (server, _dir) = hls_server(
+            r#"stdout WEBVTT\n\n00:00:01.000 --> 00:00:02.000\nCiao\n
 exit 0"#,
         );
         let target = format!(
@@ -1593,23 +1875,14 @@ exit 0"#,
             "{body:?}"
         );
 
-        // Matched on this test's own script path: the other tests here run in
-        // parallel and keep their own fake ffmpeg alive on purpose.
-        let script = dir.path().join("fake-ffmpeg");
-        let stragglers = Command::new("pgrep")
-            .args(["-f", &script.to_string_lossy()])
-            .stderr(Stdio::null())
-            .output()
-            .expect("pgrep");
-        assert!(
-            String::from_utf8_lossy(&stragglers.stdout)
-                .trim()
-                .is_empty(),
-            "an ffmpeg outlived the request it was serving"
-        );
+        // No straggler check any more. It used to match processes by the path
+        // of this test's own script, and every test now runs the same compiled
+        // stand-in: the pattern would find the ones the other tests keep alive
+        // on purpose, and fail here for their sake. What it guarded is
+        // structural rather than incidental anyway, because `output()` waits
+        // for the child before it returns the bytes.
     }
 
-    #[cfg(unix)]
     #[test]
     fn a_subtitle_track_that_cannot_be_read_fails_instead_of_arriving_empty() {
         // The failure this closes: the response head went out before ffmpeg had
@@ -1617,8 +1890,10 @@ exit 0"#,
         // element accepts that, the track switches on, and not one line ever
         // appears — which is exactly what "the subtitles do not work" looks
         // like from the outside.
-        let (server, _dir) =
-            hls_server("printf 'Stream map 0:s:0 matches no streams\\n' 1>&2\nexit 1");
+        let (server, _dir) = hls_server(
+            r#"stderr Stream map 0:s:0 matches no streams\n
+exit 1"#,
+        );
         let target = format!(
             "/subtitle?token={}&path=Movie%2FMovie.mkv&track=3",
             server.token
@@ -1627,7 +1902,6 @@ exit 0"#,
         assert!(head.starts_with("HTTP/1.1 500"), "{head}");
     }
 
-    #[cfg(unix)]
     #[test]
     fn a_subtitle_track_that_comes_back_empty_is_also_a_failure() {
         // ffmpeg exits 0 and writes nothing: a track that exists and holds no

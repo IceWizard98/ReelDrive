@@ -501,7 +501,9 @@ fn open_author_site() -> Result<(), String> {
         ("xdg-open", &[])
     };
 
-    let status = std::process::Command::new(program)
+    // Through the same builder as the tools: `cmd /C start` is a console
+    // program too, and from a GUI app Windows gives it a window of its own.
+    let status = ffmpeg::command(program)
         .args(leading)
         .arg(AUTHOR_URL)
         .stdin(std::process::Stdio::null())
@@ -718,6 +720,61 @@ pub fn run() -> tauri::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_two_places_a_version_is_written_say_the_same_thing() {
+        // Neither of these comes from the tag: the footer does, through
+        // `VITE_REELDRIVE_VERSION`, but the number the operating system shows
+        // (the exe's properties on Windows, Info.plist on macOS, the AppImage's
+        // name) is read out of these two files. The release workflow stamps the
+        // tag into both, and it can only keep them in step if they were in step
+        // to begin with. Left to drift, one of them ends up describing a
+        // release that never existed, and nothing anywhere would say so.
+        let config: serde_json::Value =
+            serde_json::from_str(include_str!("../tauri.conf.json")).expect("the config parses");
+        assert_eq!(
+            config["version"].as_str(),
+            Some(env!("CARGO_PKG_VERSION")),
+            "tauri.conf.json and Cargo.toml disagree about the version"
+        );
+    }
+
+    #[test]
+    fn the_policy_allows_everything_the_player_has_to_fetch() {
+        // Four directives, and a film needs all four. Three of them were there
+        // from the start and the fourth was not, which is the point: nothing
+        // read this file, so a directive that was simply absent fell back to
+        // `default-src 'self'` and refused something in silence. `worker-src`
+        // is the one that did: hls.js builds its transmuxer worker out of a
+        // blob, so on Windows and Linux the parsing was pushed onto the thread
+        // that draws the window.
+        let config: serde_json::Value =
+            serde_json::from_str(include_str!("../tauri.conf.json")).expect("the config parses");
+        let csp = config["app"]["security"]["csp"]
+            .as_str()
+            .expect("a content security policy");
+
+        for (directive, needed) in [
+            // The stream server, on loopback, for a file handed over as it is.
+            ("media-src", "http://127.0.0.1:*"),
+            // The same server read by hls.js, which fetches rather than plays.
+            ("connect-src", "http://127.0.0.1:*"),
+            // Media Source Extensions hands the element a blob.
+            ("media-src", "blob:"),
+            // The worker hls.js builds for itself.
+            ("worker-src", "blob:"),
+        ] {
+            let clause = csp
+                .split(';')
+                .map(str::trim)
+                .find(|clause| clause.starts_with(directive))
+                .unwrap_or_else(|| panic!("no {directive} in the policy: {csp}"));
+            assert!(
+                clause.contains(needed),
+                "{directive} has to allow {needed}: {clause}"
+            );
+        }
+    }
 
     #[test]
     fn a_subtitle_label_prefers_language_and_title_together() {
