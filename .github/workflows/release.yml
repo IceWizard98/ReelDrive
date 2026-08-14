@@ -84,9 +84,32 @@ jobs:
 
       - run: npm ci
 
+      # The number the operating system shows: the exe's properties on Windows,
+      # Info.plist on macOS, the name of the AppImage. It is read out of these
+      # two files, and unlike the footer nothing was putting the tag into them,
+      # so v0.1.0 shipped with an exe that said 0.1.0 by coincidence and the
+      # next release would have shipped one that lied. Written before anything
+      # is compiled, so the tests and the build both see the same number.
+      #
+      # The files keep 0.1.0 in the tree as a placeholder for local builds. A
+      # test keeps the two in step, which is what lets this write both of them
+      # the same way.
+      # A script rather than a line of sed: `sed -i "0,/re/s//../"` is a GNU
+      # extension, and BSD sed, which is what the macOS runners have, exits 0
+      # and changes nothing. Three platforms stamped and one not is the kind of
+      # thing this repository keeps finding after a release. The script's
+      # decisions are covered by `src/lib/stamp-version.test.js`.
+      - name: Stamp the version from the tag
+        if: env.VITE_REELDRIVE_VERSION != ''
+        shell: bash
+        run: node scripts/stamp-version.js "$VITE_REELDRIVE_VERSION"
+
+      # Plain `cargo test`, not `--lib`: the stream server's tests run a
+      # compiled stand-in for ffmpeg that lives in `examples/`, and `--lib`
+      # does not build it.
       - name: Test
         working-directory: src-tauri
-        run: cargo test --lib
+        run: cargo test
 
       # The other half of the suite. Without this the frontend is the only part
       # of the product that reaches a release unexecuted.
@@ -108,6 +131,13 @@ jobs:
           printed=$(cargo run --quiet --example build_number)
           grep -qxF "build: $REELDRIVE_BUILD" <<<"$printed" \
             || { echo "::error::the binary does not carry build $REELDRIVE_BUILD"; echo "$printed"; exit 1; }
+          # The other half, for the step above: a `jq` or `sed` that quietly
+          # matched nothing would leave the placeholder in place and every
+          # release would go on claiming 0.1.0.
+          if [ -n "$VITE_REELDRIVE_VERSION" ]; then
+            grep -qxF "version: ${VITE_REELDRIVE_VERSION#v}" <<<"$printed" \
+              || { echo "::error::the binary does not carry version $VITE_REELDRIVE_VERSION"; echo "$printed"; exit 1; }
+          fi
 
       - name: Build macOS
         if: runner.os == 'macOS'
