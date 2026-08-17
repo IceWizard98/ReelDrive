@@ -126,6 +126,11 @@ pub struct PlaybackSource {
     /// ones. Dropped in silence they were indistinguishable from a film with no
     /// subtitles at all, which is the same thing as subtitles being broken.
     bitmap_subtitles: usize,
+    /// Whether this window plays an HLS playlist by itself, or the playlist has
+    /// to go through hls.js. A fact about the platform, and the one thing on
+    /// the way to the picture that the webview cannot be asked about — see
+    /// `media::native_hls`.
+    native_hls: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -298,6 +303,7 @@ fn playback_source(
         audio_track: track,
         offset,
         bitmap_subtitles: profile.subtitles.iter().filter(|t| !t.textual).count(),
+        native_hls: media::native_hls(),
     })
 }
 
@@ -774,6 +780,42 @@ mod tests {
                 "{directive} has to allow {needed}: {clause}"
             );
         }
+    }
+
+    #[test]
+    fn the_window_is_told_which_of_the_two_ways_it_has_to_play_a_playlist() {
+        // The engine cannot be asked — Chromium answers "maybe" to
+        // `canPlayType("application/vnd.apple.mpegurl")` whether or not it can
+        // open one — so this is the only place the answer comes from. Read
+        // under a different name it is simply absent, and absent means "no
+        // native HLS": macOS would go through hls.js for every converted film,
+        // which is the path that loses HEVC in hardware. Nothing else would
+        // say so, and both halves of the name live in different languages.
+        let source = PlaybackSource {
+            url: "http://127.0.0.1:1/hls/t/s/index.m3u8".into(),
+            delivery: Delivery::Remux,
+            duration: Some(60.0),
+            title: "Film".into(),
+            video_codec: Some("h264".into()),
+            subtitles: Vec::new(),
+            audio: Vec::new(),
+            audio_track: 0,
+            offset: 0.0,
+            bitmap_subtitles: 0,
+            native_hls: media::native_hls(),
+        };
+        let json = serde_json::to_value(&source).expect("the source serialises");
+        assert_eq!(
+            json.get("native_hls").and_then(|v| v.as_bool()),
+            Some(cfg!(target_os = "macos")),
+            "the player is told about native HLS under this exact name: {json}"
+        );
+
+        let player = include_str!("../../src/lib/Player.svelte");
+        assert!(
+            player.contains("source.native_hls"),
+            "the player reads the field this command sends"
+        );
     }
 
     #[test]

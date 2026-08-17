@@ -23,6 +23,9 @@ const POSTERS = {};
 // looking at.
 const CLIP = "/clip.mp4";
 const CLIP_VTT = "/clip.vtt";
+// A playlist to play instead of the fixture, from the query string. See
+// `playback_source` below.
+const STREAM = new URL(location.href).searchParams.get("stream");
 
 const svg = (label, from, to) =>
   "data:image/svg+xml;charset=utf-8," +
@@ -299,6 +302,37 @@ window.__TAURI_INTERNALS__ = {
       //          -f lavfi -i sine=frequency=220:duration=120 \
       //          -c:v libx264 -pix_fmt yuv420p -c:a aac -shortest media/clip.mp4
       case "playback_source":
+        // `?stream=<playlist URL>` runs the player against a real HLS session
+        // — `cargo run --example serve` prints one — with `native_hls` off,
+        // which is the Windows path: hls.js and Media Source Extensions rather
+        // than the element opening the playlist itself. Chrome is the same
+        // engine as WebView2, so this is the only place that path can be run
+        // without a Windows machine.
+        //
+        // Seeking is not modelled: `seek_url` hands back the same session,
+        // which begins where it began, while the player anchors its clock at
+        // the target. The bar is then wrong by that much for the rest of the
+        // session. The restart itself — a second attach through hls.js — is
+        // what this harness is for, and that part is real: reach it by dragging
+        // backwards, or past what has been buffered, because a seek inside the
+        // buffer is one the element does by itself and restarts nothing. The
+        // minute below is a guess at the length, so the bar clamps every seek
+        // to the first minute of whatever is really playing.
+        if (STREAM) {
+          return {
+            url: STREAM,
+            delivery: "remux",
+            duration: 60,
+            title: args.path.split("/").pop(),
+            video_codec: "h264",
+            subtitles: [],
+            audio: [],
+            audio_track: 0,
+            offset: 0,
+            bitmap_subtitles: 0,
+            native_hls: false,
+          };
+        }
         return {
           url: CLIP,
           delivery: "remux",
@@ -324,7 +358,7 @@ window.__TAURI_INTERNALS__ = {
         };
       case "seek_url":
       case "fallback_url":
-        return CLIP;
+        return STREAM ?? CLIP;
       // Re-cut to the offset a restarted stream begins at. The stub has one
       // fixed file, but the player must still exercise the call: leaving it out
       // is how a command the app depends on goes unnoticed here.

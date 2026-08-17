@@ -118,6 +118,25 @@ impl Capabilities {
     }
 }
 
+/// Whether the webview opens an HLS playlist by itself.
+///
+/// WKWebView does. WebView2 on Windows and webkit2gtk on Linux do not, and
+/// there the playlist has to go through hls.js and Media Source Extensions.
+///
+/// It is the platform that answers, not the engine, because the engine cannot
+/// be asked: Chromium answers "maybe" to
+/// `canPlayType("application/vnd.apple.mpegurl")` whether or not that build can
+/// open one. Reading that as a yes is what left every converted film on Windows
+/// handing a playlist to an element that did nothing with it, and calling the
+/// film unplayable.
+///
+/// Separate from `Capabilities` on purpose: that one is about what the machine
+/// decodes, and is the same question for every file. This one is about how the
+/// bytes get in, and is settled once for the whole platform.
+pub fn native_hls() -> bool {
+    cfg!(target_os = "macos")
+}
+
 /// HEVC under either of the names ffprobe reports.
 pub fn is_hevc(codec: &str) -> bool {
     matches!(codec.to_lowercase().as_str(), "hevc" | "h265")

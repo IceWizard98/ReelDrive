@@ -111,6 +111,10 @@
   // Set once the cheap delivery has been refused, so the retry happens once
   // rather than in a loop.
   let converted = $state(false);
+  // Whether that retry is still on its way. Nothing draws it, so it is not
+  // state: it only decides whether a failure arriving now is the last word or
+  // a complaint from the stream being replaced. See `onPlaybackError`.
+  let recovering = false;
   // How the stream currently playing is being delivered. It starts as what the
   // backend chose and changes when the fallback takes over, which the seek path
   // has to follow: a converted stream is no longer seekable by the element.
@@ -135,8 +139,15 @@
   // WebKit — the engine of this window on macOS — plays HLS itself. Chromium on
   // Windows and webkit2gtk on Linux do not, and there the playlist has to be
   // fed to the element through Media Source Extensions instead.
-  const NATIVE_HLS =
-    document.createElement("video").canPlayType("application/vnd.apple.mpegurl") !== "";
+  //
+  // The backend answers it, from the platform it was compiled for. Asking the
+  // engine is what broke Windows: `canPlayType("application/vnd.apple.mpegurl")`
+  // answers "maybe" on Chromium whether or not that build can open one, so the
+  // app skipped hls.js and handed WebView2 a playlist it did nothing with. An
+  // older payload without the field means no native HLS, which is the answer
+  // that always has a way out — hls.js — rather than the one that assumes.
+  // svelte-ignore state_referenced_locally
+  const nativeHls = source.native_hls === true;
 
   // The same words the backend and the README use for the four deliveries, so
   // the caption under the spinner and the badge in the corner agree.
@@ -200,6 +211,23 @@
   // a converted film that never arrived read as "This file could not be
   // played", which names neither what failed nor where.
   let hlsFault = null;
+  // The last one that was not fatal. Nothing is shown for it at the time — it
+  // recovers by itself — but it is what describes a picture that dies a few
+  // seconds later.
+  let hlsWarning = null;
+
+  /// What the element itself reported, in words.
+  ///
+  /// `MediaError.message` is empty on WebKit and a sentence on Chromium
+  /// ("DEMUXER_ERROR_COULD_NOT_OPEN"), which is the engine on the platform
+  /// hardest to reach from here. Read nowhere, a failure that never went
+  /// through hls.js had nothing at all to show for itself.
+  function elementLine() {
+    const fault = video?.error;
+    if (!fault) return null;
+    const said = fault.message?.trim();
+    return `The window gave up on it: ${said || `media error ${fault.code}`}.`;
+  }
 
   /// One line out of an hls.js error, or nothing if it carries no detail.
   ///
@@ -233,18 +261,49 @@
     hls = null;
     // Whatever the last stream complained about, it does not describe this one.
     hlsFault = null;
-    if (!isPlaylist(url) || NATIVE_HLS) {
+    hlsWarning = null;
+    // And the instance that was complaining is gone as of the line above, so a
+    // failure from here on is about the stream being attached and has to be
+    // shown. The `finally` in `onPlaybackError` is for the routes that never
+    // get this far; this is the one that closes the window exactly.
+    recovering = false;
+    if (!isPlaylist(url) || nativeHls) {
       video.src = url;
       video.load();
       return;
     }
-    const { default: Hls } = await import("hls.js");
+    let Hls;
+    try {
+      ({ default: Hls } = await import("hls.js"));
+    } catch (e) {
+      // The library is a chunk beside the app, so this is a broken copy rather
+      // than a broken film. Unhandled it rejected into nothing and left the
+      // spinner turning with no way to find out why.
+      if (token !== attachToken) return;
+      buffering = false;
+      error = `The player could not be loaded: ${e?.message ?? e}`;
+      return;
+    }
     if (token !== attachToken || !video) return;
     if (!Hls.isSupported()) {
-      // Neither native nor MSE. Handing the URL over anyway lets the element
-      // report the failure itself, which is what starts the conversion retry.
-      video.src = url;
-      video.load();
+      // No Media Source Extensions, so hls.js cannot run here at all. Some
+      // webkit2gtk builds are in that position and still open a playlist
+      // themselves, through GStreamer, so the element gets one last try — but
+      // as a last resort, after hls.js has been ruled out, never as the guess
+      // that skips it. Guessing from this same answer is what broke Windows,
+      // where it means nothing; here it is the only thing left to ask, and a
+      // failure now carries the element's own words with it.
+      if (video.canPlayType("application/vnd.apple.mpegurl") !== "") {
+        video.src = url;
+        video.load();
+        return;
+      }
+      buffering = false;
+      // "Converted" is one of the four deliveries and this branch covers three
+      // of them: a rewrapped film arrives as a playlist too, and the badge for
+      // it says "Repackaged". Naming what they have in common instead.
+      error =
+        "This window has no Media Source Extensions, so a film that has to pass through ffmpeg cannot be shown in it.";
       return;
     }
     hls = new Hls({
@@ -264,8 +323,14 @@
     });
     // A stalled segment recovers by itself; only a fatal error means the
     // picture is not coming, and that is the same dead end as a refused file.
+    // The others are kept rather than dropped: when the picture dies later the
+    // element carries no reason of its own, and a timed-out fragment is the
+    // only description of where it stopped.
     hls.on(Hls.Events.ERROR, (_event, data) => {
-      if (!data.fatal) return;
+      if (!data.fatal) {
+        hlsWarning = data;
+        return;
+      }
       hlsFault = data;
       onPlaybackError();
     });
@@ -786,19 +851,22 @@
   /// from where we were, rather than showing a dead end.
   async function onPlaybackError() {
     if (converted || delivery === "transcode") {
-      // The element knows only that it failed; it carries no reason and there
-      // is none to read off it. ffmpeg's own complaint is the reason, and the
-      // backend kept it — "Invalid data found when processing input" is
-      // something a user can act on, "This file could not be played" is not.
-      // Both when there are both: ffmpeg's sentence says what was wrong with
-      // the film, the library's says where the picture stopped, and on a
-      // machine nobody here can reach the two together are the whole report.
+      // The conversion this failure asked for has not arrived yet, so this is
+      // not the last word on anything. The instance for the stream that just
+      // died is alive across both round trips the fallback costs (the url and
+      // the re-cut subtitles), and goes on reporting that stream; `converted`
+      // is already true by then, so without this its next fatal error puts a
+      // dead end over a film that is about to play, and nothing takes it down.
+      if (recovering) return;
+      // Three answers to three different questions, and none of them replaces
+      // another: ffmpeg says what was wrong with the film, hls.js says where
+      // the fetching stopped, the element says what it made of what arrived.
+      // Whichever exist go up together — on a machine nobody here can reach
+      // they are the whole report, and "This file could not be played" is
+      // nothing anybody can act on.
       const said = await playbackFailure().catch(() => null);
-      const fault = faultLine(hlsFault);
-      error =
-        said && fault
-          ? `${said} (${fault})`
-          : said || fault || "This file could not be played.";
+      const parts = [said, faultLine(hlsFault ?? hlsWarning), elementLine()].filter(Boolean);
+      error = parts.length ? parts.join(" ") : "This file could not be played.";
       show();
       return;
     }
@@ -811,6 +879,10 @@
     delivery = "transcode";
     buffering = true;
     error = null;
+    // Only ever set once: `converted` sends every later failure down the branch
+    // above, so there is one fallback in the life of a player and one window to
+    // hold open.
+    recovering = true;
     // Numbered like a seek, and for the same reason: this restart must not be
     // overtaken by a seek that was asked for before the picture failed.
     const token = ++seekToken;
@@ -822,10 +894,27 @@
     } catch (e) {
       if (token === seekToken) error = String(e);
     } finally {
+      // For the routes that never reach an attach: the backend refusing to
+      // build the stream, or a newer seek taking the job over. Unconditionally,
+      // unlike the anchor: left set, it would swallow every failure the rest of
+      // the film had to report.
+      recovering = false;
       // The anchor outlives the request that set it, exactly as in `seekTo`:
       // dropping it early lets the bar snap back to the old stream.
       if (token === seekToken) scrubbing = false;
     }
+  }
+
+  /// The picture is moving.
+  ///
+  /// Which is also the proof that whatever hls.js last complained about
+  /// recovered, and that is exactly how long that complaint is worth keeping:
+  /// without this a fragment that timed out in the first minute is still being
+  /// offered as the reason for a failure an hour later.
+  function onPlaying() {
+    buffering = false;
+    hlsWarning = null;
+    onProgress();
   }
 
   function onProgress() {
@@ -875,7 +964,7 @@
     onplay={() => ((paused = false), (buffering = false), show())}
     onpause={() => ((paused = true), show(), report(true))}
     onwaiting={() => (buffering = true)}
-    onplaying={() => ((buffering = false), onProgress())}
+    onplaying={onPlaying}
     onended={onEnded}
     onerror={onPlaybackError}
   >

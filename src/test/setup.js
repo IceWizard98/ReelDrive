@@ -15,14 +15,16 @@ Object.defineProperty(HTMLMediaElement.prototype, "load", {
   value: vi.fn(),
 });
 
+// "maybe" for everything, which is what Chromium answers for a playlist it
+// cannot necessarily play — the answer that made the app skip hls.js on
+// Windows and hand a `.m3u8` to an element that then failed without a reason.
+// A test engine that answered "" would have hidden that, so this one lies the
+// same way the real one does.
 Object.defineProperty(HTMLMediaElement.prototype, "canPlayType", {
   configurable: true,
-  value: () => "",
+  value: () => "maybe",
 });
 
-// Read at module load to decide whether HLS needs hls.js. Answering "" — no
-// native HLS — is what a Chromium-like engine answers, and it keeps the tests
-// off the playlist path unless one asks for it.
 Object.defineProperty(HTMLMediaElement.prototype, "seekable", {
   configurable: true,
   get: () => ({ length: 0, end: () => 0 }),
